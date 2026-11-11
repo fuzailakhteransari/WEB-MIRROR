@@ -1,0 +1,372 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WebDesk Remote — Browser Remote Desktop</title>
+  <link rel="stylesheet" href="/styles.css?v=4" />
+</head>
+<body>
+  <div id="app">
+    <!-- Top Header (Portal View) -->
+    <header id="portal-header" class="topbar">
+      <div class="brand">
+        <div class="brand-icon" aria-hidden="true">
+          <svg viewBox="0 0 24 24" width="22" height="22" fill="none" stroke="currentColor" stroke-width="2">
+            <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+            <path d="M8 21h8M12 17v4"></path>
+            <circle cx="12" cy="10" r="2.2" fill="currentColor"></circle>
+          </svg>
+        </div>
+        <div>
+          <div class="brand-title">WebDesk Remote</div>
+          <div class="brand-sub">Zero-Knowledge WebRTC Desktop Access</div>
+        </div>
+      </div>
+
+      <nav class="nav-tabs" role="tablist">
+        <button id="tab-access" class="nav-tab active" role="tab" aria-selected="true">Remote Access</button>
+        <button id="tab-support" class="nav-tab" role="tab" aria-selected="false">Remote Support</button>
+      </nav>
+
+      <div class="header-actions">
+        <span id="server-status-pill" class="pill pill-neutral">Checking server...</span>
+        <button id="btn-workspace-token" class="btn btn-ghost hidden">Workspace Key</button>
+      </div>
+    </header>
+
+    <!-- Main Portal View -->
+    <main id="portal-view" class="portal-container">
+      <!-- Remote Access Tab (Me2Me) -->
+      <section id="panel-access" class="panel">
+        <div class="panel-header">
+          <div>
+            <h1>Remote Devices</h1>
+            <p class="muted">Connect unattended to your configured Windows/desktop hosts using end-to-end SRP-6a PIN verification.</p>
+          </div>
+          <button id="btn-refresh-hosts" class="btn btn-secondary">Refresh</button>
+        </div>
+
+        <div id="tunnel-banner" class="tunnel-banner hidden">
+          <div class="tunnel-info">
+            <strong>Phone Access URL (Scan QR or Open on Phone):</strong>
+            <a id="tunnel-url-link" href="#" target="_blank" rel="noopener"></a>
+          </div>
+          <div class="tunnel-actions">
+            <img id="tunnel-qr-img" class="tunnel-qr" alt="Phone Access QR Code" />
+            <button id="btn-copy-tunnel" class="btn btn-secondary btn-sm">Copy URL</button>
+          </div>
+        </div>
+
+        <div id="hosts-grid" class="hosts-grid"></div>
+
+        <div id="hosts-empty" class="empty-card hidden">
+          <h3>No remote devices registered yet</h3>
+          <p class="muted">Run these commands on the computer you want to control:</p>
+          <pre class="code-block">python -m host.cli setup --name "My-Windows-PC" --pin 123456
+python -m host.cli start</pre>
+        </div>
+      </section>
+
+      <!-- Remote Support Tab (IT2Me) -->
+      <section id="panel-support" class="panel hidden">
+        <div class="support-grid">
+          <div class="card">
+            <h2>Connect to Another Computer</h2>
+            <p class="muted">Enter the one-time 12-digit access code shared by the person requesting help.</p>
+            <form id="support-form" class="support-form">
+              <label for="support-code-input">Access Code</label>
+              <input
+                id="support-code-input"
+                type="text"
+                inputmode="numeric"
+                maxlength="14"
+                placeholder="0000-0000-0000"
+                autocomplete="off"
+                required
+              />
+              <button id="btn-connect-support" type="submit" class="btn btn-primary">Connect</button>
+            </form>
+            <div id="support-error" class="error-banner hidden"></div>
+          </div>
+
+          <div class="card">
+            <h2>Share This Screen</h2>
+            <p class="muted">Generate a single-use 12-digit code on the target computer (no persistent PIN needed):</p>
+            <pre class="code-block">python -m host.cli share</pre>
+            <p class="muted small">Once the helper connects, the host prompts locally for consent before any pixels or input are shared.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- PIN / Pairing Modal -->
+    <div id="pin-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <h2 id="pin-modal-title">Enter Host PIN</h2>
+        <p id="pin-modal-subtitle" class="muted">Verified locally via zero-knowledge SRP-6a + DTLS binding.</p>
+        <form id="pin-form">
+          <label for="pin-input">PIN</label>
+          <input id="pin-input" type="password" placeholder="At least 6 digits/characters" autocomplete="current-password" required />
+          <label class="checkbox-row">
+            <input id="remember-pin-checkbox" type="checkbox" checked />
+            <span>Remember this device (store paired key locally)</span>
+          </label>
+          <div id="pin-error" class="error-banner hidden"></div>
+          <div class="modal-actions">
+            <button id="btn-pin-cancel" type="button" class="btn btn-ghost">Cancel</button>
+            <button id="btn-pin-submit" type="submit" class="btn btn-primary">Connect</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Workspace Token Modal -->
+    <div id="token-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
+      <div class="modal-card">
+        <h2>Workspace Access Key</h2>
+        <p class="muted">This server requires a workspace token to discover hosts.</p>
+        <form id="token-form">
+          <input id="workspace-token-input" type="password" placeholder="Enter workspace token" required />
+          <div id="token-error" class="error-banner hidden"></div>
+          <div class="modal-actions">
+            <button id="btn-token-cancel" type="button" class="btn btn-ghost">Cancel</button>
+            <button type="submit" class="btn btn-primary">Save Key</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Active Remote Session View -->
+    <section id="session-view" class="session-view hidden">
+      <div id="stage" class="video-stage" tabindex="0">
+        <video id="remote-video" autoplay playsinline muted></video>
+        <canvas id="fallback-canvas" class="hidden"></canvas>
+        <div id="trackpad-cursor" class="trackpad-cursor hidden" aria-hidden="true"></div>
+        <input
+          id="mobile-kb-input"
+          class="mobile-kb-input"
+          type="text"
+          autocapitalize="off"
+          autocomplete="off"
+          autocorrect="off"
+          spellcheck="false"
+          aria-label="Mobile soft keyboard input"
+        />
+
+        <!-- Connecting Overlay -->
+        <div id="session-overlay" class="session-overlay">
+          <div class="spinner"></div>
+          <div id="session-status-text">Establishing encrypted WebRTC session...</div>
+          <button id="btn-cancel-connecting" class="btn btn-ghost">Cancel</button>
+        </div>
+
+        <!-- Floating HUD & Quick Action Bar -->
+        <div id="hud-pill" class="hud-pill">
+          <span id="hud-host-name">Host</span>
+          <span class="dot">•</span>
+          <span id="hud-transport">Connecting</span>
+          <span class="dot">•</span>
+          <span id="hud-metrics">-- ms | -- fps</span>
+          <span class="hud-sep"></span>
+          <button id="btn-quick-keyboard" class="hud-btn" title="Open Phone Keyboard">Keys</button>
+          <button id="btn-quick-mode" class="hud-btn" title="Switch Mouse / Trackpad / Touch">Mode</button>
+          <button id="btn-quick-fullscreen" class="hud-btn" title="Fullscreen + Keyboard Lock">Fullscreen</button>
+          <button id="btn-quick-fit" class="hud-btn" title="Toggle Fit vs 1:1 Original">1:1</button>
+          <button id="btn-quick-hud-actions" class="hud-btn" title="Open Quick Actions Panel">Actions</button>
+          <button id="btn-quick-sidebar" class="hud-btn" title="Open Controls Drawer">Controls</button>
+          <button id="btn-quick-disconnect" class="hud-btn hud-btn-danger" title="End Session">Disconnect</button>
+        </div>
+
+        <!-- Sidebar Toggle Handle (mirrors CRD slide-out tab) -->
+        <button id="btn-toggle-sidebar" class="sidebar-handle" title="Toggle Remote Controls" aria-label="Toggle Remote Controls">
+          ‹
+        </button>
+
+        <!-- Collapsible Control Sidebar -->
+        <aside id="session-sidebar" class="session-sidebar">
+          <div class="sidebar-head">
+            <div>
+              <strong id="sidebar-host-title">Remote Session</strong>
+              <div id="sidebar-sub" class="muted small">DTLS + SRTP Encrypted</div>
+            </div>
+            <button id="btn-disconnect" class="btn btn-danger btn-sm">Disconnect</button>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-label">Session Options</div>
+            <div class="btn-grid">
+              <button id="btn-fullscreen" class="btn btn-secondary btn-sm">Fullscreen + Keys</button>
+              <button id="btn-fit-mode" class="btn btn-secondary btn-sm">Fit: Contain</button>
+              <button id="btn-toggle-input" class="btn btn-secondary btn-sm">Control: ON</button>
+            </div>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-label">Display & Quality</div>
+            <label class="field-label" for="select-monitor">Monitor</label>
+            <select id="select-monitor"></select>
+
+            <label class="field-label" for="select-input-mode">Input Mode</label>
+            <select id="select-input-mode">
+              <option value="desktop">Desktop Mouse</option>
+              <option value="trackpad">Phone Trackpad (Swipe + Tap)</option>
+              <option value="touch">Direct Touch</option>
+            </select>
+
+            <label class="field-label" for="select-quality">Quality Preset</label>
+            <select id="select-quality">
+              <option value="ultra">Ultra Crisp (Native up to 4K @ 30fps • 12 Mbps)</option>
+              <option value="auto" selected>Sharp (Native up to 1080p @ 30fps • 6 Mbps)</option>
+              <option value="balanced">Balanced (720p @ 30fps • 3 Mbps)</option>
+              <option value="low">Low Bandwidth (540p @ 20fps • 1.5 Mbps)</option>
+            </select>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-label">Send Key Combo</div>
+            <div class="btn-grid">
+              <button class="btn btn-secondary btn-sm combo-btn" data-combo="win">Win Key</button>
+              <button class="btn btn-secondary btn-sm combo-btn" data-combo="alt_tab">Alt + Tab</button>
+              <button class="btn btn-secondary btn-sm combo-btn" data-combo="ctrl_shift_esc">Task Mgr</button>
+              <button class="btn btn-secondary btn-sm combo-btn" data-combo="win_d">Show Desktop</button>
+            </div>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-label">Type / Paste Text Directly</div>
+            <input id="paste-text-input" type="text" placeholder="Type text into focused remote field..." />
+            <button id="btn-paste-text" class="btn btn-secondary btn-sm">Type Text on Host</button>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-label">Clipboard Sync</div>
+            <textarea id="clipboard-box" rows="3" placeholder="Text to sync with remote clipboard..."></textarea>
+            <div class="btn-grid">
+              <button id="btn-clipboard-send" class="btn btn-secondary btn-sm">Send to Host</button>
+              <button id="btn-clipboard-pull" class="btn btn-secondary btn-sm">Pull from Host</button>
+            </div>
+            <div id="clipboard-status" class="muted small"></div>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-label">File Transfer (to Host Downloads)</div>
+            <input id="file-input" type="file" />
+            <button id="btn-upload-file" class="btn btn-primary btn-sm" style="width:100%;margin-top:8px;">Upload File</button>
+            <div id="file-progress" class="muted small" style="margin-top:6px;"></div>
+          </div>
+        </aside>
+      </div>
+    </section>
+
+    <!-- Quick Actions Panel (Works Standalone Without Screen Mirroring, or Over Active Session) -->
+    <section id="quick-actions-view" class="qa-view hidden">
+      <div class="qa-container">
+        <header class="qa-header">
+          <div>
+            <h2 id="qa-host-title">Quick Actions</h2>
+            <div id="qa-mode-sub" class="muted small">Direct encrypted PC commands (zero video bandwidth)</div>
+          </div>
+          <div class="qa-head-actions">
+            <button id="qa-btn-refresh" class="btn btn-secondary btn-sm">Refresh</button>
+            <button id="qa-btn-mirror" class="btn btn-primary btn-sm">Screen Mirror</button>
+            <button id="qa-btn-disconnect" class="btn btn-danger btn-sm">Disconnect</button>
+          </div>
+        </header>
+
+        <div id="qa-feedback" class="qa-feedback hidden"></div>
+
+        <div class="qa-telemetry">
+          <span id="qa-stat-cpu" class="pill">CPU: --%</span>
+          <span id="qa-stat-ram" class="pill">RAM: -- GB</span>
+          <span id="qa-stat-battery" class="pill">Power: --</span>
+          <span id="qa-stat-lock" class="pill">Lock: --</span>
+          <span id="qa-stat-awake" class="pill">Keep Awake: Off</span>
+        </div>
+
+        <div class="qa-grid">
+          <div class="card qa-card">
+            <h3>Lock, Open Lock & Display</h3>
+            <p class="muted small">Privacy Lock shields & blanks screen remotely; Open Lock wakes and unlocks Privacy Shield.</p>
+            <div class="qa-btn-grid">
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="privacy_lock">Privacy Lock</button>
+              <button class="btn btn-success btn-sm qa-action-btn" data-action="open_lock">Open Lock</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="screen_off">Screen Off</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="screen_on">Wake Screen</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="lock_windows" data-confirm="Lock Windows session (Win+L)? Unlocking OS lock requires typing your Windows password on the PC.">Windows Lock</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="keep_awake_on">Keep Awake ON</button>
+              <button class="btn btn-ghost btn-sm qa-action-btn" data-action="keep_awake_off">Keep Awake OFF</button>
+            </div>
+          </div>
+
+          <div class="card qa-card">
+            <h3>Power Controls</h3>
+            <p class="muted small">Shutdown and Restart wait 5 seconds so you can abort anytime.</p>
+            <div class="qa-btn-grid">
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="sleep" data-confirm="Put the remote PC to sleep?">Sleep PC</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="restart" data-confirm="Restart PC in 5 seconds?">Restart (5s)</button>
+              <button class="btn btn-danger btn-sm qa-action-btn" data-action="shutdown" data-confirm="Shutdown PC in 5 seconds?">Shutdown (5s)</button>
+              <button class="btn btn-success btn-sm qa-action-btn" data-action="abort_shutdown">Abort Shutdown</button>
+            </div>
+          </div>
+
+          <div class="card qa-card">
+            <h3>Audio, Media & Shortcuts</h3>
+            <div class="qa-btn-grid qa-btn-grid-3">
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="vol_down">Vol -</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="vol_mute">Mute</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="vol_up">Vol +</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="media_prev">Prev</button>
+              <button class="btn btn-primary btn-sm qa-action-btn" data-action="media_play_pause">Play / Pause</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="media_next">Next</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="hotkey_win_d">Show Desktop</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="hotkey_alt_tab">Alt + Tab</button>
+              <button class="btn btn-secondary btn-sm qa-action-btn" data-action="hotkey_alt_f4" data-confirm="Close the active window (Alt+F4)?">Alt + F4</button>
+            </div>
+          </div>
+
+          <div class="card qa-card">
+            <h3>Open Website & Quick Launch</h3>
+            <div class="qa-input-row">
+              <input id="qa-url-input" type="url" placeholder="https://youtube.com" />
+              <button id="qa-btn-open-url" class="btn btn-primary btn-sm">Open URL</button>
+            </div>
+            <div class="qa-btn-grid qa-btn-grid-3" style="margin-top:10px;">
+              <button class="btn btn-secondary btn-sm qa-preset-btn" data-preset="downloads">Downloads</button>
+              <button class="btn btn-secondary btn-sm qa-preset-btn" data-preset="explorer">Explorer</button>
+              <button class="btn btn-secondary btn-sm qa-preset-btn" data-preset="taskmgr">Task Mgr</button>
+              <button class="btn btn-secondary btn-sm qa-preset-btn" data-preset="cmd">Terminal</button>
+              <button class="btn btn-secondary btn-sm qa-preset-btn" data-preset="calc">Calculator</button>
+              <button class="btn btn-secondary btn-sm qa-preset-btn" data-preset="notepad">Notepad</button>
+              <button class="btn btn-ghost btn-sm qa-action-btn" data-action="empty_recycle_bin" data-confirm="Permanently empty the PC Recycle Bin?">Empty Bin</button>
+            </div>
+          </div>
+
+          <div class="card qa-card">
+            <h3>Instant Screen Snapshot</h3>
+            <p class="muted small">Grab a single still frame without starting continuous video streaming.</p>
+            <button id="qa-btn-snapshot" class="btn btn-primary btn-sm" style="margin-top:8px;">Take Instant Snapshot</button>
+            <img id="qa-snapshot-img" class="qa-snapshot-img hidden" alt="Remote screen snapshot" />
+          </div>
+
+          <div class="card qa-card">
+            <h3>Send File or Clipboard</h3>
+            <div class="qa-input-row">
+              <input id="qa-clip-input" type="text" placeholder="Text to copy to PC clipboard..." />
+              <button id="qa-btn-clip-send" class="btn btn-secondary btn-sm">Copy</button>
+              <button id="qa-btn-clip-pull" class="btn btn-ghost btn-sm">Pull</button>
+            </div>
+            <div class="qa-input-row" style="margin-top:10px;">
+              <input id="qa-file-input" type="file" />
+              <button id="qa-btn-upload" class="btn btn-primary btn-sm">Upload</button>
+            </div>
+            <div id="qa-file-progress" class="muted small" style="margin-top:6px;"></div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+
+  <script type="module" src="/js/app.js?v=4"></script>
+</body>
+</html>

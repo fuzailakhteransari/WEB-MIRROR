@@ -1,0 +1,18 @@
+{
+  "manifest_version": 3,
+  "name": "WebDesk Remote Companion",
+  "version": "1.0.0",
+  "description": "Bridges the WebDesk Remote web portal to the local Native Messaging host setup binary.",
+  "permissions": [
+    "nativeMessaging"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "externally_connectable": {
+    "matches": [
+      "http://127.0.0.1/*",
+      "http://localhost/*"
+    ]
+  }
+}

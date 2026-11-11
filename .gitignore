@@ -1,0 +1,8 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.webdesk-remote/
+dist/
+build/
+*.log
+*.pid

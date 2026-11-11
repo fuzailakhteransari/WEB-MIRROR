@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: webdesk-remote-signaling
+    runtime: docker
+    plan: free
+    healthCheckPath: /api/health
+    envVars:
+      # Optional extra workspace password on top of your 2048-bit SRP-6a host PIN.
+      # Leave empty for instant 1-PIN access across phone and PC.
+      - key: WEBDESK_WORKSPACE_TOKEN
+        value: ""
+      - key: WEBDESK_SUPPORT_TTL
+        value: "300"
+      - key: WEBDESK_ICE_SERVERS_JSON
+        value: '[{"urls":["stun:stun.l.google.com:19302","stun:stun1.l.google.com:19302"]}]'

@@ -1,0 +1,10 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+.git/
+host/
+tests/
+extension/
+*.bat
+*.md
+.webdesk-remote/

@@ -1,4 +1,4 @@
-import { InputCaptureController, getVideoContentRect } from "./input_capture.js?v=5";
+import { InputCaptureController, getVideoContentRect, isTouchCapable } from "./input_capture.js?v=6";
 import { WebRTCViewerClient } from "./webrtc_client.js?v=4";
 
 const PAIRING_STORAGE_KEY = "webdesk_pairings_v1";
@@ -714,6 +714,7 @@ function syncInputModeUi() {
   if (!inputController) return;
   const labels = {
     desktop: "Mouse",
+    scroll: "Scroll",
     trackpad: "Trackpad",
     touch: "Touch",
   };
@@ -815,7 +816,9 @@ els.qaBtnUpload.addEventListener("click", async () => {
 
 els.btnQuickMode.addEventListener("click", () => {
   if (!inputController) return;
-  const order = ["trackpad", "touch", "desktop"];
+  const order = isTouchCapable()
+    ? ["scroll", "touch", "trackpad", "desktop"]
+    : ["desktop", "trackpad", "touch"];
   const next = order[(order.indexOf(inputController.inputMode) + 1) % order.length];
   inputController.setMode(next);
   syncInputModeUi();

@@ -170,7 +170,7 @@ python -m host.cli start</pre>
           <span id="hud-metrics">-- ms | -- fps</span>
           <span class="hud-sep"></span>
           <button id="btn-quick-keyboard" class="hud-btn" title="Open Phone Keyboard">Keys</button>
-          <button id="btn-quick-mode" class="hud-btn" title="Switch Mouse / Trackpad / Touch">Mode</button>
+          <button id="btn-quick-mode" class="hud-btn" title="Switch Scroll / Touch / Trackpad / Mouse">Mode</button>
           <button id="btn-zoom-out" class="hud-btn" title="Zoom Out">−</button>
           <button id="btn-zoom-reset" class="hud-btn" title="Reset Zoom (or pinch screen with 2 fingers)">1x</button>
           <button id="btn-zoom-in" class="hud-btn" title="Zoom In">+</button>
@@ -213,6 +213,7 @@ python -m host.cli start</pre>
             <label class="field-label" for="select-input-mode">Input Mode</label>
             <select id="select-input-mode">
               <option value="desktop">Desktop Mouse</option>
+              <option value="scroll">Phone Scroll (Drag + Tap)</option>
               <option value="trackpad">Phone Trackpad (Swipe + Tap)</option>
               <option value="touch">Direct Touch</option>
             </select>
@@ -379,6 +380,6 @@ python -m host.cli start</pre>
     </section>
   </div>
 
-  <script type="module" src="/js/app.js?v=5"></script>
+  <script type="module" src="/js/app.js?v=6"></script>
 </body>
 </html>

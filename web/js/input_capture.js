@@ -48,7 +48,7 @@ export class InputCaptureController {
     this.onCursorMove = onCursorMove || (() => {});
     this.onZoomChange = onZoomChange || (() => {});
     this.enabled = true;
-    this.inputMode = isTouchCapable() ? "trackpad" : "desktop";
+    this.inputMode = isTouchCapable() ? "scroll" : "desktop";
     this.cursor = { x: 0.5, y: 0.5 };
     this._pendingMove = null;
     this._rafScheduled = false;
@@ -65,6 +65,8 @@ export class InputCaptureController {
     this._touchStart = { x: 0, y: 0 };
     this._touchLast = { x: 0, y: 0 };
     this._touchStartTime = 0;
+    this._touchStartNormalized = { x: 0.5, y: 0.5 };
+    this._touchAction = null;
     this._moved1 = false;
     this._twoFinger = false;
     this._moved2 = false;
@@ -140,7 +142,7 @@ export class InputCaptureController {
   }
 
   setMode(mode) {
-    if (["desktop", "trackpad", "touch"].includes(mode)) {
+    if (["desktop", "trackpad", "touch", "scroll"].includes(mode)) {
       this.inputMode = mode;
       this.onCursorMove(this.cursor.x, this.cursor.y, this.inputMode);
     }
@@ -214,10 +216,11 @@ export class InputCaptureController {
     const onTouchStart = (e) => {
       if (!this.enabled) return;
       if (e.touches.length >= 2) {
-        if (!this._twoFinger && (this.inputMode === "touch" || this._doubleTapDragging)) {
+        if (!this._twoFinger && this._touchAction === "dragging") {
           this.sendInput({ type: "mouse_button", button: 0, down: false, x: this.cursor.x, y: this.cursor.y });
-          this._doubleTapDragging = false;
         }
+        this._doubleTapDragging = false;
+        this._touchAction = "multi";
         this._twoFinger = true;
         this._moved2 = false;
         this._pinchMode = this.zoom > 1.02 ? "zoom_pan" : null;
@@ -239,26 +242,20 @@ export class InputCaptureController {
         this._touchStart = { x: t.clientX, y: t.clientY };
         this._touchLast = { x: t.clientX, y: t.clientY };
         this._touchStartTime = performance.now();
+        this._touchAction = "pending";
 
         if (this.inputMode === "touch") {
           const pt = clientToNormalized(this.videoEl, t.clientX, t.clientY);
           this._updateCursor(pt.x, pt.y);
-          this.sendInput({
-            type: "mouse_button",
-            button: 0,
-            down: true,
-            x: this.cursor.x,
-            y: this.cursor.y,
-          });
-        } else if (this._touchStartTime - this._lastTapAt < 260) {
+          this._touchStartNormalized = { x: pt.x, y: pt.y };
+        } else if (this.inputMode === "scroll") {
+          const pt = clientToNormalized(this.videoEl, t.clientX, t.clientY);
+          this._updateCursor(pt.x, pt.y);
+          this._touchStartNormalized = { x: pt.x, y: pt.y };
+          this.sendInput({ type: "mouse_move", x: this.cursor.x, y: this.cursor.y });
+        } else if (this._lastTapAt > 0 && this._touchStartTime - this._lastTapAt < 260) {
           this._doubleTapDragging = true;
-          this.sendInput({
-            type: "mouse_button",
-            button: 0,
-            down: true,
-            x: this.cursor.x,
-            y: this.cursor.y,
-          });
+          this._touchAction = "drag-pending";
         }
       }
     };
@@ -302,20 +299,48 @@ export class InputCaptureController {
 
       if (!this._twoFinger && e.touches.length === 1) {
         const t = e.touches[0];
-        if (Math.hypot(t.clientX - this._touchStart.x, t.clientY - this._touchStart.y) > 5) {
+        if (Math.hypot(t.clientX - this._touchStart.x, t.clientY - this._touchStart.y) > 6) {
           this._moved1 = true;
         }
 
         if (this.inputMode === "touch") {
           const pt = clientToNormalized(this.videoEl, t.clientX, t.clientY);
+          if (this._touchAction === "pending" && this._moved1) {
+            this._touchAction = "dragging";
+            this._updateCursor(this._touchStartNormalized.x, this._touchStartNormalized.y);
+            this.sendInput({ type: "mouse_button", button: 0, down: true, x: this.cursor.x, y: this.cursor.y });
+          }
           this._updateCursor(pt.x, pt.y);
-          this.sendInput({ type: "mouse_move", x: this.cursor.x, y: this.cursor.y });
+          if (this._touchAction === "dragging") {
+            this.sendInput({ type: "mouse_move", x: this.cursor.x, y: this.cursor.y });
+          }
+        } else if (this.inputMode === "scroll") {
+          const deltaX = t.clientX - this._touchLast.x;
+          const deltaY = t.clientY - this._touchLast.y;
+          if (this._moved1) {
+            this._touchAction = "scrolling";
+            this.sendInput({
+              type: "mouse_wheel",
+              dx: -deltaX * 0.04,
+              dy: -deltaY * 0.04,
+              x: this.cursor.x,
+              y: this.cursor.y,
+            });
+          }
         } else {
           const box = getVideoContentRect(this.videoEl);
           const dx = ((t.clientX - this._touchLast.x) / Math.max(1, box.width)) * 1.45;
           const dy = ((t.clientY - this._touchLast.y) / Math.max(1, box.height)) * 1.45;
           this._updateCursor(this.cursor.x + dx, this.cursor.y + dy);
-          this.sendInput({ type: "mouse_move", x: this.cursor.x, y: this.cursor.y });
+          if (this._doubleTapDragging && this._moved1) {
+            if (this._touchAction === "drag-pending") {
+              this._touchAction = "dragging";
+              this.sendInput({ type: "mouse_button", button: 0, down: true, x: this.cursor.x, y: this.cursor.y });
+            }
+            this.sendInput({ type: "mouse_move", x: this.cursor.x, y: this.cursor.y });
+          } else {
+            this.sendInput({ type: "mouse_move", x: this.cursor.x, y: this.cursor.y });
+          }
         }
         this._touchLast = { x: t.clientX, y: t.clientY };
       }
@@ -325,33 +350,28 @@ export class InputCaptureController {
       if (!this.enabled) return;
       e.preventDefault();
 
+      const cancelled = e.type === "touchcancel";
       if (this._twoFinger) {
         if (e.touches.length === 0) {
-          if (!this._moved2) {
-            // Two-finger tap -> Right click
-            this.sendInput({
-              type: "mouse_button",
-              button: 2,
-              down: true,
-              x: this.cursor.x,
-              y: this.cursor.y,
-            });
-            this.sendInput({
-              type: "mouse_button",
-              button: 2,
-              down: false,
-              x: this.cursor.x,
-              y: this.cursor.y,
-            });
-          }
           this._twoFinger = false;
           this._pinchMode = null;
+          this._touchAction = null;
         }
         return;
       }
 
       if (e.touches.length === 0) {
-        if (this.inputMode === "touch") {
+        if (cancelled) {
+          if (this._touchAction === "dragging") {
+            this.sendInput({ type: "mouse_button", button: 0, down: false, x: this.cursor.x, y: this.cursor.y });
+          }
+          this._doubleTapDragging = false;
+          this._touchAction = null;
+          return;
+        }
+
+        const elapsed = performance.now() - this._touchStartTime;
+        if (this.inputMode === "touch" && this._touchAction === "dragging") {
           this.sendInput({
             type: "mouse_button",
             button: 0,
@@ -359,16 +379,21 @@ export class InputCaptureController {
             x: this.cursor.x,
             y: this.cursor.y,
           });
+          this._touchAction = null;
         } else if (this._doubleTapDragging) {
           this._doubleTapDragging = false;
-          this.sendInput({
-            type: "mouse_button",
-            button: 0,
-            down: false,
-            x: this.cursor.x,
-            y: this.cursor.y,
-          });
-        } else if (!this._moved1 && performance.now() - this._touchStartTime < 280) {
+          if (this._touchAction === "dragging") {
+            this.sendInput({ type: "mouse_button", button: 0, down: false, x: this.cursor.x, y: this.cursor.y });
+          }
+          this._touchAction = null;
+        } else if ((this.inputMode === "touch" || this.inputMode === "scroll") && !this._moved1 && elapsed < 280) {
+          this.sendInput({ type: "mouse_button", button: 0, down: true, x: this.cursor.x, y: this.cursor.y });
+          this.sendInput({ type: "mouse_button", button: 0, down: false, x: this.cursor.x, y: this.cursor.y });
+          this._lastTapAt = performance.now();
+          this._touchAction = null;
+        } else if (this.inputMode === "scroll") {
+          this._touchAction = null;
+        } else if (!this._moved1 && elapsed < 280) {
           this.sendInput({
             type: "mouse_button",
             button: 0,
@@ -384,6 +409,9 @@ export class InputCaptureController {
             y: this.cursor.y,
           });
           this._lastTapAt = performance.now();
+          this._touchAction = null;
+        } else {
+          this._touchAction = null;
         }
       }
     };
@@ -450,6 +478,9 @@ export class InputCaptureController {
     };
 
     const onBlur = () => {
+      if (this._touchAction === "dragging") {
+        this.sendInput({ type: "mouse_button", button: 0, down: false, x: this.cursor.x, y: this.cursor.y });
+      }
       this._dragging = false;
       this._doubleTapDragging = false;
       this.sendInput({ type: "release_all_keys" });

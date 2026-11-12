@@ -301,9 +301,76 @@ async def test_e2e_mobile_touch_trackpad_and_soft_keyboard(tmp_path: Path) -> No
                     timeout=15000,
                 )
 
-                # Touch device auto-selects Trackpad mode and shows trackpad reticle
-                assert await page.text_content("#btn-quick-mode") == "Trackpad"
-                await page.wait_for_selector("#trackpad-cursor", state="visible", timeout=5000)
+                # Touch devices default to one-finger scroll with tap-to-click.
+                assert await page.text_content("#btn-quick-mode") == "Scroll"
+                await page.wait_for_selector("#trackpad-cursor", state="hidden", timeout=5000)
+
+                before_scroll = len(injector.events)
+                await page.evaluate(
+                    """() => {
+                        const v = document.getElementById('remote-video');
+                        const r = v.getBoundingClientRect();
+                        const x = r.left + r.width / 2;
+                        const mk = y => new Touch({identifier: 41, target: v, clientX: x, clientY: y, pageX: x, pageY: y});
+                        const a = mk(r.top + 60), b = mk(r.top + 160);
+                        const fire = (type, touches, changed) => v.dispatchEvent(new TouchEvent(type, {
+                            bubbles: true, cancelable: true, touches, targetTouches: touches, changedTouches: [changed]
+                        }));
+                        fire('touchstart', [a], a);
+                        fire('touchmove', [b], b);
+                        fire('touchend', [], b);
+                    }"""
+                )
+                scroll_events = injector.events[before_scroll:]
+                assert any(e["type"] == "mouse_wheel" and abs(e["dy"]) >= 3.9 for e in scroll_events)
+                assert not any(e["type"] == "mouse_button" for e in scroll_events)
+
+                before_tap = len(injector.events)
+                await page.evaluate(
+                    """() => {
+                        const v = document.getElementById('remote-video');
+                        const r = v.getBoundingClientRect();
+                        const x = r.left + r.width / 2, y = r.top + r.height / 2;
+                        const t = new Touch({identifier: 42, target: v, clientX: x, clientY: y, pageX: x, pageY: y});
+                        const fire = (type, touches) => v.dispatchEvent(new TouchEvent(type, {
+                            bubbles: true, cancelable: true, touches, targetTouches: touches, changedTouches: [t]
+                        }));
+                        fire('touchstart', [t]);
+                        fire('touchend', []);
+                    }"""
+                )
+                tap_events = injector.events[before_tap:]
+                assert [e["down"] for e in tap_events if e["type"] == "mouse_button"] == [True, False]
+
+                # Direct Touch pinch begins with one finger down; no click may leak to the host.
+                await page.click("#btn-quick-mode")
+                assert await page.text_content("#btn-quick-mode") == "Touch"
+                before_pinch = len(injector.events)
+                await page.evaluate(
+                    """() => {
+                        const v = document.getElementById('remote-video');
+                        const r = v.getBoundingClientRect(), cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+                        const mk = (id, x) => new Touch({identifier: id, target: v, clientX: x, clientY: cy, pageX: x, pageY: cy});
+                        const first = mk(1, cx - 30), second = mk(2, cx + 30);
+                        const fire = (type, touches, changed) => v.dispatchEvent(new TouchEvent(type, {
+                            bubbles: true, cancelable: true, touches, targetTouches: touches, changedTouches: changed
+                        }));
+                        fire('touchstart', [first], [first]);
+                        fire('touchstart', [first, second], [second]);
+                        for (const half of [45, 60, 75, 90]) {
+                            fire('touchmove', [mk(1, cx - half), mk(2, cx + half)], [mk(1, cx - half), mk(2, cx + half)]);
+                        }
+                        fire('touchend', [], [first, second]);
+                    }"""
+                )
+                await page.wait_for_function(
+                    "() => (document.getElementById('remote-video').style.transform || '').includes('scale(')",
+                    timeout=5000,
+                )
+                assert not any(
+                    e["type"] in {"mouse_button", "touch_tap"}
+                    for e in injector.events[before_pinch:]
+                )
 
                 # Mobile soft keyboard button + typing forwards text
                 await page.click("#btn-quick-keyboard")
@@ -311,9 +378,9 @@ async def test_e2e_mobile_touch_trackpad_and_soft_keyboard(tmp_path: Path) -> No
                 await asyncio.sleep(0.2)
                 assert any(e["type"] == "type_text" and e["text"] == "PhoneHello" for e in injector.events)
 
-                # Toggle Trackpad -> Touch -> Desktop Mouse cleanly
+                # Cycle Touch -> Trackpad -> Desktop Mouse cleanly
                 await page.click("#btn-quick-mode")
-                assert await page.text_content("#btn-quick-mode") == "Touch"
+                assert await page.text_content("#btn-quick-mode") == "Trackpad"
                 await page.click("#btn-quick-mode")
                 assert await page.text_content("#btn-quick-mode") == "Mouse"
                 await page.click("#btn-quick-disconnect")

@@ -1,28 +1,30 @@
 # WebDesk Remote
 
-Access and control a Windows computer from a browser. Open the WebDesk portal on your phone, tablet, or another computer to view the remote screen, use mouse and keyboard controls, scroll, zoom, and run Quick Actions.
+WebDesk Remote lets you view and control a Windows PC from a browser. Use screen mirroring for live control or Quick Actions for common commands.
 
-This repository contains the Windows host and the signaling service. Each person should connect their phone and computer through the same WebDesk server URL; use a server you control for an isolated setup.
+## How it works
+
+The Windows app runs on the computer you want to access. A WebDesk server connects that computer to the browser on your phone. For a separate setup, deploy your own server and use its URL on both devices. Each server keeps its own host list.
 
 ## Features
 
-- Live Windows screen mirroring and remote input
-- Mobile-friendly controls, including touch scrolling and pinch-to-zoom
-- Quick Actions for lock, display, media, power, and common Windows commands
+- Live screen mirroring and remote input
+- Mobile controls for touch, scrolling, and pinch-to-zoom
+- Quick Actions for common Windows commands
 - Clipboard and file transfer
-- PIN-based SRP-6a authentication and optional workspace access token
-- Local network, temporary HTTPS tunnel, or Render deployment
+- PIN-based host authentication
+- Local network, temporary HTTPS tunnel, or self-managed Render deployment
 
-## Run the Windows host
+## Requirements
 
-### Requirements
-
-- Windows 10 or 11, 64-bit
+- Windows 10 or 11 (64-bit)
 - Python 3.12 or newer
 - Git for Windows
-- Internet connection for the first-time dependency install
+- Internet access for the initial dependency setup
 
-Clone the repository and run its single launcher:
+## 1. Install the Windows host
+
+Clone the repository on the Windows PC you want to access, then run the launcher:
 
 ```powershell
 git clone https://github.com/fuzailakhteransari/WEB-MIRROR.git
@@ -30,49 +32,53 @@ cd WEB-MIRROR
 .\WebDesk_Remote.bat
 ```
 
-On first run, the launcher creates a local `.venv` and installs the required packages. In the Control Center, set a computer name and private PIN, then select **Save PIN & Apply**. The host runs in the background and starts automatically when you sign in to Windows.
+On first launch, the setup creates a local Python environment and installs the required packages. In the Control Center, choose a computer name and a private PIN, then select **Save PIN & Apply**.
 
-## Connect from phone Chrome
+## 2. Deploy your own WebDesk server on Render
 
-Use the URL belonging to your own WebDesk server. The public `web-mirror.onrender.com` instance belongs to the project owner; it is a shared service and is not the private server for a new install.
+These steps create a separate WebDesk service under your own Render account. Your computer and phone will use this service rather than another person's server.
 
-- **Same Wi-Fi/LAN:** Open the LAN URL shown by the Windows launcher on the phone.
-- **Remote access without deploying a server:** In the Windows Control Center, start Quick Tunnel and open its generated HTTPS URL on the phone. The temporary URL changes when the tunnel restarts.
-- **Your own always-on cloud server:** Deploy this repository's Render Blueprint (below), set that service URL in **Fixed Cloud WS** on the Windows computer, and open that same service's HTTPS URL in phone Chrome.
+1. Sign in to your Render account.
+2. Create a new **Blueprint** and connect the `WEB-MIRROR` GitHub repository. The included `render.yaml` defines the service.
+3. Deploy the Blueprint and wait for the service to become available.
+4. Copy the service URL, such as `https://your-service.onrender.com`. Confirm that it is responding by opening `https://your-service.onrender.com/api/health`.
+5. On the Windows PC, open the WebDesk Control Center. Paste the service URL into **Fixed Cloud WS**, then select **Apply & Run in Background**.
 
-Then select the computer registered on that server, enter the PIN configured on that Windows computer, and choose screen mirroring or Quick Actions. A server maintains its own host list: using another person's server means using their shared instance, even when you choose your own computer name and PIN.
+The Render service URL is publicly reachable. For an additional shared access secret, set `WEBDESK_WORKSPACE_TOKEN` in the Render service's environment and enter the same value in the Control Center. Keep the token private and do not commit it to Git.
 
-## Use your own cloud deployment
+## 3. Connect from your phone
 
-The repository includes a Render Blueprint at `render.yaml` and a Dockerfile. For a private setup, your friend should create a Render account/project and deploy their own Blueprint from this repository. Enter their new service URL in the Windows Control Center under **Fixed Cloud WS** and choose **Apply & Run in Background**. On the phone, open that same service URL in Chrome. This keeps the host registry separate from the project owner's server.
+1. Open the same Render service URL in Chrome on your phone.
+2. Select the Windows computer registered on that service.
+3. Enter the private PIN configured for that computer.
+4. Choose screen mirroring for live control or Quick Actions for commands without video.
 
-To require an additional workspace secret, set `WEBDESK_WORKSPACE_TOKEN` in Render's Environment settings and enter the same value in the Control Center. Never commit secret values to Git.
+## Other connection options
 
-## Android phone host (separate project)
-
-The Android APK is **not required** to control a Windows computer from phone Chrome. It is only for people who want to make an Android phone itself a remote host, so another browser can view and control that phone. The Android app is maintained separately from this Windows project.
+- **Same Wi-Fi network:** Open the LAN URL shown by the Windows launcher on your phone.
+- **Temporary remote access:** Start **Quick Tunnel** in the Control Center and open its HTTPS URL on your phone. The URL changes when the tunnel restarts.
 
 ## Security
 
-- Choose a unique private PIN for each Windows host.
-- The host stores a PIN verifier, not the plaintext PIN.
-- Local host configuration and trusted-device pairing data live in `%USERPROFILE%\.webdesk-remote\` and must not be shared or committed.
-- Keep workspace tokens, `.env` files, and signing keys out of Git.
+- Use a unique, private PIN for each computer.
+- The host stores a PIN verifier rather than the plaintext PIN.
+- Keep workspace tokens and local configuration private. Host settings and trusted-device pairing data are stored in `%USERPROFILE%\.webdesk-remote\`.
+- Do not commit `.env` files, tokens, signing keys, logs, or local device data.
 
 ## Development
 
-Install the test dependencies in the launcher's virtual environment and run the test suite:
+Install the development dependencies and run the test suite:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -v tests/
 ```
 
-## Configuration
+## Configuration reference
 
 | Variable | Purpose |
 | --- | --- |
 | `WEBDESK_WORKSPACE_TOKEN` | Optional shared secret for portal and signaling access |
 | `WEBDESK_ICE_SERVERS_JSON` | Custom STUN/TURN server configuration |
-| `WEBDESK_REGISTRY_PATH` | Persistent host registry location |
-| `WEBDESK_SUPPORT_TTL` | Lifetime of one-time support codes in seconds; default `300` |
+| `WEBDESK_REGISTRY_PATH` | Persistent server-side host registry location |
+| `WEBDESK_SUPPORT_TTL` | Lifetime of one-time support codes in seconds (default: `300`) |

@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WebDesk Remote — Browser Remote Desktop</title>
-  <link rel="stylesheet" href="/styles.css?v=4" />
+  <link rel="stylesheet" href="/styles.css?v=5" />
 </head>
 <body>
   <div id="app">
@@ -171,6 +171,9 @@ python -m host.cli start</pre>
           <span class="hud-sep"></span>
           <button id="btn-quick-keyboard" class="hud-btn" title="Open Phone Keyboard">Keys</button>
           <button id="btn-quick-mode" class="hud-btn" title="Switch Mouse / Trackpad / Touch">Mode</button>
+          <button id="btn-zoom-out" class="hud-btn" title="Zoom Out">−</button>
+          <button id="btn-zoom-reset" class="hud-btn" title="Reset Zoom (or pinch screen with 2 fingers)">1x</button>
+          <button id="btn-zoom-in" class="hud-btn" title="Zoom In">+</button>
           <button id="btn-quick-fullscreen" class="hud-btn" title="Fullscreen + Keyboard Lock">Fullscreen</button>
           <button id="btn-quick-fit" class="hud-btn" title="Toggle Fit vs 1:1 Original">1:1</button>
           <button id="btn-quick-hud-actions" class="hud-btn" title="Open Quick Actions Panel">Actions</button>
@@ -221,6 +224,15 @@ python -m host.cli start</pre>
               <option value="balanced">Balanced (720p @ 30fps • 3 Mbps)</option>
               <option value="low">Low Bandwidth (540p @ 20fps • 1.5 Mbps)</option>
             </select>
+          </div>
+
+          <div class="sidebar-section">
+            <div class="section-label">Screen Zoom (Pinch Screen Anytime)</div>
+            <div class="btn-grid-3">
+              <button id="btn-sidebar-zoom-out" class="btn btn-secondary btn-sm" type="button">Zoom −</button>
+              <button id="btn-sidebar-zoom-reset" class="btn btn-secondary btn-sm" type="button">Reset 1x</button>
+              <button id="btn-sidebar-zoom-in" class="btn btn-secondary btn-sm" type="button">Zoom +</button>
+            </div>
           </div>
 
           <div class="sidebar-section">
@@ -367,6 +379,6 @@ python -m host.cli start</pre>
     </section>
   </div>
 
-  <script type="module" src="/js/app.js?v=4"></script>
+  <script type="module" src="/js/app.js?v=5"></script>
 </body>
 </html>

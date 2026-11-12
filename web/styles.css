@@ -367,6 +367,7 @@ input[type="text"], input[type="password"], select, textarea {
   place-items: center;
   outline: none;
   overflow: hidden;
+  touch-action: none;
 }
 
 .video-stage.fit-original-stage {
@@ -381,6 +382,7 @@ input[type="text"], input[type="password"], select, textarea {
   object-fit: contain;
   background: #000;
   user-select: none;
+  touch-action: none;
 }
 
 #remote-video.fit-original,
@@ -466,6 +468,18 @@ input[type="text"], input[type="password"], select, textarea {
 
 .hud-btn:hover {
   border-color: var(--primary);
+}
+
+.btn-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 6px;
+}
+
+.hud-btn.active {
+  background: rgba(79, 140, 255, 0.28);
+  border-color: var(--primary);
+  color: #dce9ff;
 }
 
 .hud-btn-danger {

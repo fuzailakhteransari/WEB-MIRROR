@@ -1,4 +1,4 @@
-import { InputCaptureController, getVideoContentRect } from "./input_capture.js?v=4";
+import { InputCaptureController, getVideoContentRect } from "./input_capture.js?v=5";
 import { WebRTCViewerClient } from "./webrtc_client.js?v=4";
 
 const PAIRING_STORAGE_KEY = "webdesk_pairings_v1";
@@ -65,6 +65,12 @@ const els = {
   btnPasteText: document.getElementById("btn-paste-text"),
   btnQuickKeyboard: document.getElementById("btn-quick-keyboard"),
   btnQuickMode: document.getElementById("btn-quick-mode"),
+  btnZoomOut: document.getElementById("btn-zoom-out"),
+  btnZoomReset: document.getElementById("btn-zoom-reset"),
+  btnZoomIn: document.getElementById("btn-zoom-in"),
+  btnSidebarZoomOut: document.getElementById("btn-sidebar-zoom-out"),
+  btnSidebarZoomReset: document.getElementById("btn-sidebar-zoom-reset"),
+  btnSidebarZoomIn: document.getElementById("btn-sidebar-zoom-in"),
   btnQuickFullscreen: document.getElementById("btn-quick-fullscreen"),
   btnQuickFit: document.getElementById("btn-quick-fit"),
   btnQuickHudActions: document.getElementById("btn-quick-hud-actions"),
@@ -396,6 +402,7 @@ async function startSession({ mode, hostId, hostName, supportCode, pin, pairing,
         stageEl: els.stage,
         videoEl: activeMediaEl,
         sendInput: (ev) => activeClient && activeClient.sendInput(ev),
+        onZoomChange: (z) => syncZoomUi(z),
         onCursorMove: (nx, ny, mode) => {
           if (mode === "trackpad") {
             const box = getVideoContentRect(activeMediaEl);
@@ -510,6 +517,11 @@ function teardownSessionUi() {
   }
   els.remoteVideo.classList.remove("fit-original");
   els.fallbackCanvas.classList.remove("fit-original");
+  els.remoteVideo.style.transform = "";
+  els.remoteVideo.style.transformOrigin = "";
+  els.fallbackCanvas.style.transform = "";
+  els.fallbackCanvas.style.transformOrigin = "";
+  syncZoomUi(1);
   els.remoteVideo.classList.remove("hidden");
   els.fallbackCanvas.classList.add("hidden");
   els.stage.classList.remove("fit-original-stage");
@@ -676,10 +688,23 @@ async function toggleFullscreenMode() {
   els.stage.focus({ preventScroll: true });
 }
 
+function syncZoomUi(zoom = 1) {
+  const zoomed = zoom > 1.01;
+  const label = zoomed ? zoom.toFixed(1).replace(/\.0$/, "") + "x" : "1x";
+  if (els.btnZoomReset) {
+    els.btnZoomReset.textContent = label;
+    els.btnZoomReset.classList.toggle("active", zoomed);
+  }
+  if (els.btnSidebarZoomReset) {
+    els.btnSidebarZoomReset.textContent = zoomed ? "Reset (" + label + ")" : "Reset 1x";
+  }
+}
+
 function toggleFitMode() {
   const orig = els.remoteVideo.classList.toggle("fit-original");
   els.fallbackCanvas.classList.toggle("fit-original", orig);
   els.stage.classList.toggle("fit-original-stage", orig);
+  if (inputController) inputController.resetZoom();
   els.btnFitMode.textContent = orig ? "Fit: 1:1 Original" : "Fit: Contain";
   els.btnQuickFit.textContent = orig ? "Contain" : "1:1";
   els.stage.focus({ preventScroll: true });
@@ -806,6 +831,31 @@ els.selectInputMode.addEventListener("change", () => {
   els.selectInputMode.blur();
   els.stage.focus({ preventScroll: true });
 });
+
+for (const [btn, factor] of [
+  [els.btnZoomOut, 1 / 1.35],
+  [els.btnZoomIn, 1.35],
+  [els.btnSidebarZoomOut, 1 / 1.35],
+  [els.btnSidebarZoomIn, 1.35],
+]) {
+  if (btn) {
+    btn.addEventListener("click", () => {
+      if (inputController) inputController.zoomBy(factor);
+      btn.blur();
+      els.stage.focus({ preventScroll: true });
+    });
+  }
+}
+
+for (const btn of [els.btnZoomReset, els.btnSidebarZoomReset]) {
+  if (btn) {
+    btn.addEventListener("click", () => {
+      if (inputController) inputController.resetZoom();
+      btn.blur();
+      els.stage.focus({ preventScroll: true });
+    });
+  }
+}
 
 els.btnQuickKeyboard.addEventListener("click", () => {
   els.mobileKbInput.focus();

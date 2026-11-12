@@ -105,41 +105,6 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                 return {"url": url}
         return {"url": None}
 
-    def _find_phone_apk() -> Path | None:
-        root = Path(__file__).resolve().parent.parent
-        candidates = [
-            root / "dist" / "webdesk-phone-host.apk",
-            root / "android-host" / "app" / "build" / "outputs" / "apk" / "release" / "app-release.apk",
-            root / "android-host" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk",
-        ]
-        for candidate in candidates:
-            if candidate.is_file():
-                return candidate
-        return None
-
-    @app.get("/api/phone-apk")
-    async def phone_apk_status(_: None = Depends(require_http_token)) -> dict[str, Any]:
-        apk = _find_phone_apk()
-        if not apk:
-            return {"available": False, "filename": "webdesk-phone-host.apk", "size_bytes": 0}
-        return {
-            "available": True,
-            "filename": "webdesk-phone-host.apk",
-            "size_bytes": apk.stat().st_size,
-            "download_url": "/downloads/webdesk-phone-host.apk",
-        }
-
-    @app.get("/downloads/webdesk-phone-host.apk")
-    async def download_phone_apk(_: None = Depends(require_http_token)) -> FileResponse:
-        apk = _find_phone_apk()
-        if not apk:
-            raise HTTPException(status_code=404, detail="Android Host APK not built yet")
-        return FileResponse(
-            apk,
-            media_type="application/vnd.android.package-archive",
-            filename="webdesk-phone-host.apk",
-        )
-
     @app.get("/api/qr")
     async def qr_svg(
         url: str = Query(..., min_length=1, max_length=512),

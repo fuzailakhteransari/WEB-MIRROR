@@ -9,11 +9,7 @@ build/
 *.pid
 *.apk
 *.aab
-!dist/webdesk-phone-host.apk
-!dist/.gitkeep
 *.jks
 *.keystore
 .env
-android-host/.gradle/
-android-host/local.properties
-android-host/**/build/
+/WebDesk-Android-Host/

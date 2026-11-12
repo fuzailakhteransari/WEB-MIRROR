@@ -14,15 +14,7 @@ const els = {
   panelSupport: document.getElementById("panel-support"),
   serverStatusPill: document.getElementById("server-status-pill"),
   btnWorkspaceToken: document.getElementById("btn-workspace-token"),
-  btnPhoneSetup: document.getElementById("btn-phone-setup"),
   btnRefreshHosts: document.getElementById("btn-refresh-hosts"),
-  phoneSetupModal: document.getElementById("phone-setup-modal"),
-  btnPhoneSetupClose: document.getElementById("btn-phone-setup-close"),
-  phoneSetupServerUrl: document.getElementById("phone-setup-server-url"),
-  phoneSetupQr: document.getElementById("phone-setup-qr"),
-  btnCopyPhoneServer: document.getElementById("btn-copy-phone-server"),
-  btnDownloadPhoneApk: document.getElementById("btn-download-phone-apk"),
-  phoneApkStatus: document.getElementById("phone-apk-status"),
   tunnelBanner: document.getElementById("tunnel-banner"),
   tunnelUrlLink: document.getElementById("tunnel-url-link"),
   tunnelQrImg: document.getElementById("tunnel-qr-img"),
@@ -705,53 +697,6 @@ els.tabSupport.addEventListener("click", () => {
 });
 
 els.btnRefreshHosts.addEventListener("click", refreshHealthAndHosts);
-
-if (els.btnPhoneSetup) {
-  els.btnPhoneSetup.addEventListener("click", async () => {
-    const serverUrl = latestTunnelUrl || location.origin;
-    els.phoneSetupServerUrl.textContent = serverUrl;
-    const token = getWorkspaceToken();
-    els.phoneSetupQr.src = `/api/qr?url=${encodeURIComponent(serverUrl)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
-    els.phoneSetupModal.classList.remove("hidden");
-    try {
-      const resp = await apiFetch("/api/phone-apk");
-      const info = await resp.json();
-      if (info.available) {
-        const mb = (info.size_bytes / (1024 * 1024)).toFixed(1);
-        els.btnDownloadPhoneApk.href = token
-          ? `${info.download_url}?token=${encodeURIComponent(token)}`
-          : info.download_url;
-        els.btnDownloadPhoneApk.classList.remove("hidden");
-        els.phoneApkStatus.textContent = `APK ready (${mb} MB)`;
-      } else {
-        els.btnDownloadPhoneApk.classList.add("hidden");
-        els.phoneApkStatus.textContent = "APK not built into dist/ yet — run android-host build or install via USB.";
-      }
-    } catch {
-      els.btnDownloadPhoneApk.classList.add("hidden");
-    }
-  });
-}
-
-if (els.btnPhoneSetupClose) {
-  els.btnPhoneSetupClose.addEventListener("click", () => {
-    els.phoneSetupModal.classList.add("hidden");
-  });
-}
-
-if (els.btnCopyPhoneServer) {
-  els.btnCopyPhoneServer.addEventListener("click", async () => {
-    const text = els.phoneSetupServerUrl.textContent || "";
-    if (!text) return;
-    try {
-      await navigator.clipboard.writeText(text);
-      els.btnCopyPhoneServer.textContent = "Copied!";
-      setTimeout(() => {
-        els.btnCopyPhoneServer.textContent = "Copy Server URL";
-      }, 1500);
-    } catch {}
-  });
-}
 
 // Auto-format 12-digit support code as XXXX-XXXX-XXXX
 els.supportCodeInput.addEventListener("input", () => {

@@ -47,10 +47,9 @@
         <div class="panel-header">
           <div>
             <h1>Remote Devices</h1>
-            <p class="muted">Mirror & control your Windows PCs and Android phones from anywhere with SRP-6a PIN security.</p>
+            <p class="muted">Mirror and control your Windows computers from anywhere with SRP-6a PIN security.</p>
           </div>
           <div class="panel-header-actions">
-            <button id="btn-phone-setup" class="btn btn-secondary">Pair Phone</button>
             <button id="btn-refresh-hosts" class="btn btn-secondary">Refresh</button>
           </div>
         </div>
@@ -70,7 +69,7 @@
 
         <div id="hosts-empty" class="empty-card hidden">
           <h3>No remote devices registered yet</h3>
-          <p class="muted">Run these commands on a Windows computer, or click <strong>Pair Phone</strong> above to mirror an Android phone:</p>
+          <p class="muted">Run these commands on the Windows computer you want to access:</p>
           <pre class="code-block">python -m host.cli setup --name "My-Windows-PC" --pin 123456
 python -m host.cli start</pre>
         </div>
@@ -107,40 +106,6 @@ python -m host.cli start</pre>
         </div>
       </section>
     </main>
-
-    <!-- Pair Android Phone Modal -->
-    <div id="phone-setup-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">
-      <div class="modal-card modal-card-wide">
-        <div class="modal-header-row">
-          <h2>Pair Another Android Phone</h2>
-          <button id="btn-phone-setup-close" type="button" class="btn btn-ghost btn-sm">Close</button>
-        </div>
-        <p class="muted small">
-          Install <strong>WebDesk Phone Host</strong> on the Android phone you want to mirror &amp; control, then enter your Server URL and PIN.
-        </p>
-
-        <div class="phone-setup-server-box">
-          <div>
-            <div class="section-label">Server URL to Paste in App</div>
-            <div id="phone-setup-server-url" class="phone-setup-url"></div>
-          </div>
-          <img id="phone-setup-qr" class="tunnel-qr" alt="Server URL QR Code" />
-        </div>
-
-        <div class="phone-setup-actions">
-          <button id="btn-copy-phone-server" type="button" class="btn btn-secondary btn-sm">Copy Server URL</button>
-          <a id="btn-download-phone-apk" href="/downloads/webdesk-phone-host.apk" class="btn btn-primary btn-sm hidden">Download Host APK</a>
-          <span id="phone-apk-status" class="muted small"></span>
-        </div>
-
-        <ol class="phone-setup-steps small muted">
-          <li>Install <strong>WebDesk Phone Host APK</strong> on your other Android phone (via USB <code>adb install</code> or the download button above).</li>
-          <li>Open the app, paste the <strong>Server URL</strong> above, name the phone, and set an Access PIN.</li>
-          <li>Tap <strong>Enable Accessibility Control</strong> (allows remote taps, swipes, Back/Home, &amp; typing) — on Android 13+, open <em>App Info → ⋮ → Allow restricted settings</em> first if greyed out.</li>
-          <li>Tap <strong>Start Mirror + Control Host</strong> and allow Screen Cast once — your phone appears online right here from anywhere!</li>
-        </ol>
-      </div>
-    </div>
 
     <!-- PIN / Pairing Modal -->
     <div id="pin-modal" class="modal-backdrop hidden" role="dialog" aria-modal="true">

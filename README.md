@@ -1,41 +1,28 @@
 # WebDesk Remote
 
-Browser-based remote access for Windows PCs and Android phones.
+Access and control a Windows computer from a browser. Open the WebDesk portal on your phone, tablet, or another computer to view the remote screen, use mouse and keyboard controls, scroll, zoom, and run Quick Actions.
 
-WebDesk Remote provides live screen mirroring, remote input, device quick actions, clipboard and file transfer, and a mobile-friendly web portal. Windows hosts run as an always-on background service; Android phones can run as native remote hosts.
+The portal is available at [web-mirror.onrender.com](https://web-mirror.onrender.com/). This repository contains the Windows host and the signaling service used by the portal.
 
-## Highlights
+## Features
 
-- **Windows and Android hosts** — manage PCs and Android phones from one browser portal.
-- **Live control** — screen streaming with mouse, keyboard, touch, scroll, trackpad, and pinch-to-zoom controls.
-- **Quick Actions** — device commands without starting a video session, including lock, display, media, navigation, and power actions.
-- **Secure pairing** — PIN-based SRP-6a authentication with optional trusted-device pairing and workspace access token.
-- **Remote-ready** — use a temporary Cloudflare Quick Tunnel or deploy the signaling service to Render.
-- **One-click Windows setup** — creates an isolated Python environment, installs runtime dependencies, and launches the Control Center.
+- Live Windows screen mirroring and remote input
+- Mobile-friendly controls, including touch scrolling and pinch-to-zoom
+- Quick Actions for lock, display, media, power, and common Windows commands
+- Clipboard and file transfer
+- PIN-based SRP-6a authentication and optional workspace access token
+- Local network, temporary HTTPS tunnel, or Render deployment
 
-## Architecture
-
-```text
-Browser / PWA
-      │
-      ▼
-WebDesk signaling service ─── WebRTC or secure WSS relay ─── Windows or Android host
-      │
-      └── FastAPI portal, device directory, signaling, APK download
-```
-
-## Quick start
+## Run the Windows host
 
 ### Requirements
 
-| Component | Requirement |
-| --- | --- |
-| Windows host | Windows 10 or 11, 64-bit |
-| Runtime | Python 3.12+ |
-| Source checkout | Git for Windows |
-| Android host | Android 8.0+ (API 26) |
+- Windows 10 or 11, 64-bit
+- Python 3.12 or newer
+- Git for Windows
+- Internet connection for the first-time dependency install
 
-### Install and run
+Clone the repository and run its single launcher:
 
 ```powershell
 git clone https://github.com/fuzailakhteransari/WEB-MIRROR.git
@@ -43,86 +30,47 @@ cd WEB-MIRROR
 .\WebDesk_Remote.bat
 ```
 
-On first launch, the installer creates `.venv`, installs the runtime dependencies, and opens the Windows Control Center. Create a host name and a private PIN, then select **Save PIN & Apply**.
+On first run, the launcher creates a local `.venv` and installs the required packages. In the Control Center, set a computer name and private PIN, then select **Save PIN & Apply**. The host runs in the background and starts automatically when you sign in to Windows.
 
-The host registers to start automatically when that Windows user signs in. The Control Center also manages the remote URL, workspace token, TURN settings, support sessions, and service shutdown.
+## Connect from phone Chrome
 
-## Connect from another device
+1. Open [web-mirror.onrender.com](https://web-mirror.onrender.com/) in Chrome on your phone.
+2. Select the Windows computer and enter the PIN you set in its Control Center.
+3. Choose screen mirroring for live control or Quick Actions for commands without video.
 
-### Temporary HTTPS access
+The Windows Control Center can also show a temporary HTTPS tunnel URL and QR code for the local portal. The tunnel address changes when the tunnel restarts.
 
-The Control Center creates a Cloudflare Quick Tunnel by default. Scan the QR code or open its displayed HTTPS URL on the device you will use to connect.
+## Use your own cloud deployment
 
-Quick Tunnel URLs are temporary and change after a tunnel restart.
+The repository includes a Render Blueprint at `render.yaml` and a Dockerfile. In Render, create a **Blueprint** from this repository and deploy the signaling service. Then enter that service's URL in the Windows Control Center under **Fixed Cloud WS** and choose **Apply & Run in Background**.
 
-### Persistent cloud access with Render
+To require an additional workspace secret, set `WEBDESK_WORKSPACE_TOKEN` in Render's Environment settings and enter the same value in the Control Center. Never commit secret values to Git.
 
-1. Push this repository to GitHub.
-2. In [Render](https://dashboard.render.com/), create a **Blueprint** from the repository. The root `render.yaml` configures the service.
-3. Confirm `https://your-service.onrender.com/api/health` returns JSON.
-4. In the Windows Control Center, paste the deployed HTTPS URL into **Fixed Cloud WS** and select **Apply & Run in Background**.
-5. Bookmark the Render URL on the browser or phone that will connect.
+## Android phone host (separate project)
 
-For an additional shared access secret, set `WEBDESK_WORKSPACE_TOKEN` in Render’s **Environment** settings and enter the same value in the Control Center’s **Workspace Token** field. Do not commit token values to Git.
+The Android APK is **not required** to control a Windows computer from phone Chrome. It is only for people who want to make an Android phone itself a remote host, so another browser can view and control that phone. The Android app is maintained separately from this Windows project.
 
-## Android phone host
+## Security
 
-The ready-to-install APK is included at `dist/webdesk-phone-host.apk` and is served by the portal through **Pair Phone**.
-
-1. Install **WebDesk Phone Host** on the Android phone.
-2. Enter the server URL: your Render URL, Quick Tunnel URL, or LAN URL.
-3. Set a PIN, enable accessibility control, and accept the screen-capture permission.
-4. Set the app battery setting to **Unrestricted**.
-5. Select **Start Mirror + Control Host**.
-
-The phone appears in the portal as an Android host. Use live mirroring for direct control, or Quick Actions for commands such as Back, Home, wake, lock, flashlight, media controls, clipboard, and file transfer.
-
-> On Android 13+, accessibility may require **App info → ⋮ → Allow restricted settings** before it can be enabled.
-
-### Rebuild the Android app
-
-Open `android-host` in Android Studio with Android SDK 36 and JDK 17. Build the debug APK, then replace `dist/webdesk-phone-host.apk` with:
-
-```text
-android-host\app\build\outputs\apk\debug\app-debug.apk
-```
-
-Commit the updated APK and redeploy the cloud service for the portal to serve it.
-
-## Security model
-
-- Hosts authenticate with a private PIN using SRP-6a; the PIN itself is not stored in plaintext.
-- An optional workspace token protects the portal and signaling endpoints.
-- Device pairings and local host configuration are stored in `%USERPROFILE%\.webdesk-remote\` and must stay on that PC.
-
-When sharing the repository, share the GitHub link only. Do not share or commit local configuration, pairing data, `.env` files, Android signing keys, logs, or build caches.
-
-## Repository layout
-
-| Path | Purpose |
-| --- | --- |
-| `host/` | Windows host, capture, input, tunnel, Quick Actions, and Control Center |
-| `server/` | FastAPI portal, signaling service, and host directory |
-| `web/` | Browser and PWA client |
-| `android-host/` | Native Android remote-host app |
-| `shared/` | Shared signaling and SRP primitives |
-| `dist/` | Installable Android host APK |
-| `tests/` | Unit, integration, and browser test coverage |
+- Choose a unique private PIN for each Windows host.
+- The host stores a PIN verifier, not the plaintext PIN.
+- Local host configuration and trusted-device pairing data live in `%USERPROFILE%\.webdesk-remote\` and must not be shared or committed.
+- Keep workspace tokens, `.env` files, and signing keys out of Git.
 
 ## Development
 
-Install contributor tooling after the one-click setup has created `.venv`:
+Install the test dependencies in the launcher's virtual environment and run the test suite:
 
 ```powershell
 .\.venv\Scripts\python.exe -m pip install -r requirements-dev.txt
 .\.venv\Scripts\python.exe -m pytest -v tests/
 ```
 
-## Configuration reference
+## Configuration
 
 | Variable | Purpose |
 | --- | --- |
-| `WEBDESK_WORKSPACE_TOKEN` | Optional shared token for portal and signaling access |
+| `WEBDESK_WORKSPACE_TOKEN` | Optional shared secret for portal and signaling access |
 | `WEBDESK_ICE_SERVERS_JSON` | Custom STUN/TURN server configuration |
-| `WEBDESK_REGISTRY_PATH` | Path for persistent server-side host registry data |
-| `WEBDESK_SUPPORT_TTL` | One-time support code lifetime in seconds; defaults to `300` |
+| `WEBDESK_REGISTRY_PATH` | Persistent host registry location |
+| `WEBDESK_SUPPORT_TTL` | Lifetime of one-time support codes in seconds; default `300` |

@@ -1,5 +1,0 @@
-<resources>
-    <string name="app_name">WebDesk Phone Host</string>
-    <string name="accessibility_service_label">WebDesk Remote Touch Control</string>
-    <string name="accessibility_service_description">Allows WebDesk Remote (authenticated by your PIN) to tap, swipe, press Back/Home/Recents, and type text on this phone when you control it remotely.</string>
-</resources>

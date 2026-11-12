@@ -127,17 +127,8 @@ def test_mobile_host_registration_persistence_and_manifest(tmp_path: Path) -> No
     assert manifest.status_code == 200
     assert manifest.json()["display"] == "standalone"
 
-    apk_status = client.get("/api/phone-apk")
-    assert apk_status.status_code == 200
-    assert apk_status.json()["available"] is True
-    assert apk_status.json()["download_url"] == "/downloads/webdesk-phone-host.apk"
-
-    apk_download = client.get("/downloads/webdesk-phone-host.apk")
-    assert apk_download.status_code == 200
-    assert apk_download.headers["content-type"].startswith(
-        "application/vnd.android.package-archive"
-    )
-    assert len(apk_download.content) > 1_000_000
+    assert client.get("/api/phone-apk").status_code == 404
+    assert client.get("/downloads/webdesk-phone-host.apk").status_code == 404
 
 
 @pytest.mark.asyncio

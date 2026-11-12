@@ -7,7 +7,6 @@ RUN pip install --no-cache-dir fastapi uvicorn[standard] websockets pydantic qrc
 COPY shared ./shared
 COPY server ./server
 COPY web ./web
-COPY dist ./dist
 
 ENV WEBDESK_HOST=0.0.0.0
 ENV WEBDESK_PORT=8080

@@ -2,7 +2,7 @@
 
 Access and control a Windows computer from a browser. Open the WebDesk portal on your phone, tablet, or another computer to view the remote screen, use mouse and keyboard controls, scroll, zoom, and run Quick Actions.
 
-The portal is available at [web-mirror.onrender.com](https://web-mirror.onrender.com/). This repository contains the Windows host and the signaling service used by the portal.
+This repository contains the Windows host and the signaling service. Each person should connect their phone and computer through the same WebDesk server URL; use a server you control for an isolated setup.
 
 ## Features
 
@@ -34,15 +34,17 @@ On first run, the launcher creates a local `.venv` and installs the required pac
 
 ## Connect from phone Chrome
 
-1. Open [web-mirror.onrender.com](https://web-mirror.onrender.com/) in Chrome on your phone.
-2. Select the Windows computer and enter the PIN you set in its Control Center.
-3. Choose screen mirroring for live control or Quick Actions for commands without video.
+Use the URL belonging to your own WebDesk server. The public `web-mirror.onrender.com` instance belongs to the project owner; it is a shared service and is not the private server for a new install.
 
-The Windows Control Center can also show a temporary HTTPS tunnel URL and QR code for the local portal. The tunnel address changes when the tunnel restarts.
+- **Same Wi-Fi/LAN:** Open the LAN URL shown by the Windows launcher on the phone.
+- **Remote access without deploying a server:** In the Windows Control Center, start Quick Tunnel and open its generated HTTPS URL on the phone. The temporary URL changes when the tunnel restarts.
+- **Your own always-on cloud server:** Deploy this repository's Render Blueprint (below), set that service URL in **Fixed Cloud WS** on the Windows computer, and open that same service's HTTPS URL in phone Chrome.
+
+Then select the computer registered on that server, enter the PIN configured on that Windows computer, and choose screen mirroring or Quick Actions. A server maintains its own host list: using another person's server means using their shared instance, even when you choose your own computer name and PIN.
 
 ## Use your own cloud deployment
 
-The repository includes a Render Blueprint at `render.yaml` and a Dockerfile. In Render, create a **Blueprint** from this repository and deploy the signaling service. Then enter that service's URL in the Windows Control Center under **Fixed Cloud WS** and choose **Apply & Run in Background**.
+The repository includes a Render Blueprint at `render.yaml` and a Dockerfile. For a private setup, your friend should create a Render account/project and deploy their own Blueprint from this repository. Enter their new service URL in the Windows Control Center under **Fixed Cloud WS** and choose **Apply & Run in Background**. On the phone, open that same service URL in Chrome. This keeps the host registry separate from the project owner's server.
 
 To require an additional workspace secret, set `WEBDESK_WORKSPACE_TOKEN` in Render's Environment settings and enter the same value in the Control Center. Never commit secret values to Git.
 

@@ -304,6 +304,26 @@ async def test_e2e_mobile_touch_trackpad_and_soft_keyboard(tmp_path: Path) -> No
                 # Touch devices default to one-finger scroll with tap-to-click.
                 assert await page.text_content("#btn-quick-mode") == "Scroll"
                 await page.wait_for_selector("#trackpad-cursor", state="hidden", timeout=5000)
+                mobile_controls = await page.evaluate(
+                    """() => {
+                        const stage = document.getElementById('stage');
+                        const video = document.getElementById('remote-video');
+                        const hud = document.getElementById('hud-pill');
+                        const actions = document.getElementById('btn-quick-hud-actions').getBoundingClientRect();
+                        return {
+                            stageTouchAction: getComputedStyle(stage).touchAction,
+                            videoTouchAction: getComputedStyle(video).touchAction,
+                            hudTouchAction: getComputedStyle(hud).touchAction,
+                            actionsVisible: actions.left >= 0 && actions.right <= innerWidth,
+                        };
+                    }"""
+                )
+                assert mobile_controls == {
+                    "stageTouchAction": "auto",
+                    "videoTouchAction": "none",
+                    "hudTouchAction": "pan-x",
+                    "actionsVisible": True,
+                }
 
                 before_scroll = len(injector.events)
                 await page.evaluate(

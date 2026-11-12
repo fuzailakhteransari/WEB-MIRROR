@@ -367,7 +367,7 @@ input[type="text"], input[type="password"], select, textarea {
   place-items: center;
   outline: none;
   overflow: hidden;
-  touch-action: none;
+  touch-action: auto;
 }
 
 .video-stage.fit-original-stage {
@@ -651,6 +651,13 @@ input[type="text"], input[type="password"], select, textarea {
     overflow-x: auto;
     scrollbar-width: none;
     padding: 5px 10px;
+    gap: 5px;
+    touch-action: pan-x;
+  }
+
+  .hud-pill .dot,
+  #hud-metrics {
+    display: none;
   }
 
   .session-sidebar {

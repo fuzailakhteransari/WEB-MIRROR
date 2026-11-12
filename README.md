@@ -20,6 +20,7 @@ The Windows app runs on the computer you want to access. A WebDesk server connec
 - Windows 10 or 11 (64-bit)
 - Python 3.12 or newer
 - Git for Windows
+- Google Chrome (required for Bizpeople attendance actions)
 - Internet access for the initial dependency setup
 
 ## 1. Install the Windows host
@@ -52,6 +53,10 @@ The Render service URL is publicly reachable. For an additional shared access se
 2. Select the Windows computer registered on that service.
 3. Enter the private PIN configured for that computer.
 4. Choose screen mirroring for live control or Quick Actions for commands without video.
+
+## Bizpeople attendance actions
+
+The Windows Quick Actions panel includes **Check In to Bizpeople** and **Check Out to Bizpeople**. Each action asks for confirmation, then opens the Bizpeople dashboard in a dedicated Chrome profile on the Windows PC. On first use, sign in when prompted. The browser stays open so you can review the result; close it before starting another attendance action. The sign-in session is stored in that Windows user's `%LOCALAPPDATA%` Chrome profile, separate from their regular Chrome profile.
 
 ## Other connection options
 

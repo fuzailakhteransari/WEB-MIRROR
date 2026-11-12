@@ -140,6 +140,7 @@ class Win32QuickActionExecutor(QuickActionExecutor):
         self._kernel32 = ctypes.windll.kernel32
         self._shell32 = ctypes.windll.shell32
         self._curtain_proc: subprocess.Popen[bytes] | None = None
+        self._bizpeople_proc: subprocess.Popen[bytes] | None = None
         self._keep_awake = False
         self._last_cpu_times: tuple[int, int, int] | None = None
 
@@ -261,6 +262,32 @@ class Win32QuickActionExecutor(QuickActionExecutor):
 
     def execute(self, action: str, params: dict[str, Any] | None = None) -> tuple[bool, str]:
         p = params or {}
+
+        attendance_actions = {
+            "bizpeople_check_in": ("check_in", "Check In"),
+            "bizpeople_check_out": ("check_out", "Check Out"),
+        }
+        attendance = attendance_actions.get(action)
+        if attendance:
+            action_name, label = attendance
+            if self._bizpeople_proc is not None and self._bizpeople_proc.poll() is None:
+                return False, "Close the existing Bizpeople Chrome window before starting another attendance action."
+            project_root = Path(__file__).resolve().parent.parent
+            try:
+                self._bizpeople_proc = subprocess.Popen(
+                    [sys.executable, "-m", "host.bizpeople_attendance", action_name],
+                    cwd=str(project_root),
+                    stdin=subprocess.DEVNULL,
+                    stdout=subprocess.DEVNULL,
+                    stderr=subprocess.DEVNULL,
+                    creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+                    close_fds=True,
+                )
+            except OSError as exc:
+                return False, f"Could not start Bizpeople {label}: {exc}"
+            return True, (
+                f"Bizpeople {label} opened in Chrome. Sign in if prompted, then review the attendance result before closing Chrome."
+            )
 
         if action == "lock_windows":
             self._user32.LockWorkStation()
@@ -489,6 +516,8 @@ class MockQuickActionExecutor(QuickActionExecutor):
             return True, "Keep Awake disabled."
 
         known = {
+            "bizpeople_check_in",
+            "bizpeople_check_out",
             "screen_off",
             "screen_on",
             "shutdown",

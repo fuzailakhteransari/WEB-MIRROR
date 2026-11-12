@@ -73,6 +73,9 @@ export class WebRTCViewerClient {
     this._sessionReady = false;
     this._videoLive = false;
     this._webrtcReady = false;
+    this._wsDirect = false;
+    this.hostPlatform = "windows";
+    this.hostCapabilities = [];
     this.wsFallbackActive = false;
     this._stalePc = null;
     this._iceWatchdog = null;
@@ -84,7 +87,7 @@ export class WebRTCViewerClient {
     this._drawingFrame = false;
   }
 
-  async connect({ mode, hostId, supportCode, pin, pairing, rememberDevice, controlOnly = false }) {
+  async connect({ mode, hostId, supportCode, pin, pairing, rememberDevice, controlOnly = false, wsDirect = false }) {
     this._connectOptions = {
       mode,
       hostId,
@@ -93,13 +96,23 @@ export class WebRTCViewerClient {
       pairing,
       rememberDevice,
       controlOnly: Boolean(controlOnly),
+      wsDirect: Boolean(wsDirect),
     };
     this.onStatus(controlOnly ? "Connecting Quick Actions..." : "Connecting to signaling server...");
 
     if (controlOnly) {
       this.pc = null;
       this.viewerFp = "ws";
+      this._wsDirect = true;
       this.wsFallbackActive = true;
+      await this._openSignalingAndInitiate("");
+      return;
+    }
+
+    if (wsDirect) {
+      this.pc = null;
+      this.viewerFp = "ws";
+      this._wsDirect = true;
       await this._openSignalingAndInitiate("");
       return;
     }
@@ -160,6 +173,8 @@ export class WebRTCViewerClient {
         if (!this._sessionReady) {
           this.onStatus("Encrypted tunnel open — waiting for remote display...");
         }
+      } else if (this.pc.connectionState === "closed" && this._webrtcReady && !this._closed) {
+        this.close("Peer connection closed");
       } else if (this.pc.connectionState === "failed") {
         if (this._authSucceeded && this.ws && this.ws.readyState === WebSocket.OPEN) {
           this._activateWsFallback("Direct P2P failed — switching to WSS Relay...");
@@ -205,6 +220,7 @@ export class WebRTCViewerClient {
               payload: {
                 code: opts.supportCode,
                 sdp_offer: sdpOffer,
+                ws_direct: Boolean(opts.wsDirect),
                 viewer_label: navigator.userAgent.slice(0, 60),
               },
             })
@@ -218,6 +234,7 @@ export class WebRTCViewerClient {
                 sdp_offer: sdpOffer,
                 pairing_id: opts.pairing ? opts.pairing.pairing_id : null,
                 control_only: Boolean(opts.controlOnly),
+                ws_direct: Boolean(opts.wsDirect),
                 viewer_label: navigator.userAgent.slice(0, 60),
               },
             })
@@ -258,8 +275,20 @@ export class WebRTCViewerClient {
     const type = msg.type;
     const payload = msg.payload || {};
 
+    if (type === "ping") {
+      this._sendWs({ type: "pong" });
+      return;
+    }
+
     if (type === "session_created") {
       this.sessionId = msg.session_id;
+      this.hostPlatform = payload.platform || this.hostPlatform;
+      this.hostCapabilities = Array.isArray(payload.capabilities)
+        ? payload.capabilities
+        : this.hostCapabilities;
+      if (this.hostCapabilities.includes("ws_direct")) {
+        this._wsDirect = true;
+      }
       this.onStatus(`Negotiating with ${payload.host_name || "host"}...`);
       for (const c of this._pendingIce) {
         this._sendWs({ type: "ice_candidate", session_id: this.sessionId, payload: c });
@@ -274,6 +303,7 @@ export class WebRTCViewerClient {
       );
     } else if (type === "pairing_challenge") {
       this.onStatus("Authenticating trusted device...");
+      if (payload.ws_direct) this._wsDirect = true;
       const pairing = this._connectOptions.pairing;
       if (!pairing || !pairing.pairing_secret) {
         this._sendWs({
@@ -283,7 +313,8 @@ export class WebRTCViewerClient {
         });
         return;
       }
-      const ctx = buildDtlsContext(payload.host_fp, this.viewerFp);
+      const viewerFp = payload.viewer_fp || this.viewerFp;
+      const ctx = buildDtlsContext(payload.host_fp, viewerFp);
       const proof = await computePairingProof(pairing.pairing_secret, payload.nonce, ctx);
       this._sendWs({
         type: "pairing_client_proof",
@@ -292,16 +323,21 @@ export class WebRTCViewerClient {
       });
     } else if (type === "pairing_accepted") {
       this._authSucceeded = true;
+      if (payload.ws_direct) this._wsDirect = true;
       if (this._connectOptions && this._connectOptions.controlOnly) {
         this.onStatus("Trusted pairing verified — opening Quick Actions...");
+      } else if (this._wsDirect) {
+        this._activateWsFallback("Trusted pairing verified — opening display...");
       } else {
         this.onStatus("Trusted pairing verified! Opening video...");
         this._startIceWatchdog();
       }
     } else if (type === "pake_challenge") {
       this.onStatus("Verifying PIN via SRP-6a...");
+      if (payload.ws_direct) this._wsDirect = true;
       const pin = this._connectOptions.pin || "";
-      const ctx = buildDtlsContext(payload.host_fp, this.viewerFp);
+      const viewerFp = payload.viewer_fp || this.viewerFp;
+      const ctx = buildDtlsContext(payload.host_fp, viewerFp);
       this.srpClient = new SRPClient(payload.identity, pin, ctx);
       const m1 = await this.srpClient.processChallenge(payload.salt, payload.B);
       this._sendWs({
@@ -322,8 +358,11 @@ export class WebRTCViewerClient {
         return;
       }
       this._authSucceeded = true;
+      if (payload.ws_direct) this._wsDirect = true;
       if (this._connectOptions && this._connectOptions.controlOnly) {
         this.onStatus("PIN verified — opening Quick Actions...");
+      } else if (this._wsDirect) {
+        this._activateWsFallback("PIN verified! Starting remote display...");
       } else {
         this.onStatus("PIN verified! Starting remote display...");
         this._startIceWatchdog();
@@ -338,7 +377,12 @@ export class WebRTCViewerClient {
       this.wsFallbackActive = true;
       this._clearIceWatchdog();
       this._startFallbackStatsLoop();
-      this.onReady({ ...payload, wsFallback: true });
+      this.onReady({
+        ...payload,
+        wsFallback: true,
+        platform: payload.platform || this.hostPlatform,
+        capabilities: payload.capabilities || this.hostCapabilities,
+      });
     } else if (type === "ws_channel") {
       if (payload.channel && payload.data) {
         this._handleChannelPayload(payload.channel, payload.data);
@@ -387,7 +431,11 @@ export class WebRTCViewerClient {
       if (data.type === "session_ready") {
         this._sessionReady = true;
         this._maybeFinalizeWebRtc();
-        this.onReady(data);
+        this.onReady({
+          ...data,
+          platform: data.platform || this.hostPlatform,
+          capabilities: data.capabilities || this.hostCapabilities,
+        });
       } else if (data.type === "pairing_grant") {
         this.onPairingGranted({
           hostId: this._connectOptions.hostId,

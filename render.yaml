@@ -5,10 +5,8 @@ services:
     plan: free
     healthCheckPath: /api/health
     envVars:
-      # Optional extra workspace password on top of your 2048-bit SRP-6a host PIN.
-      # Leave empty for instant 1-PIN access across phone and PC.
-      - key: WEBDESK_WORKSPACE_TOKEN
-        value: ""
+      # Add WEBDESK_WORKSPACE_TOKEN in the Render dashboard if you want an
+      # extra secret. Never place its value in this repository.
       - key: WEBDESK_SUPPORT_TTL
         value: "300"
       - key: WEBDESK_ICE_SERVERS_JSON

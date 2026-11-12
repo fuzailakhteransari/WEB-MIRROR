@@ -18,6 +18,10 @@ import webbrowser
 from pathlib import Path
 from typing import Any
 
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
 from host.config_store import (
     DEFAULT_CONFIG_DIR,
     DEFAULT_CONFIG_PATH,
@@ -28,7 +32,6 @@ from host.config_store import (
 from host.tunnel import _pid_alive, start_cloudflared_tunnel
 from shared.srp import create_verifier
 
-PROJECT_ROOT = Path(__file__).resolve().parent.parent
 AUTOSTART_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
 AUTOSTART_VALUE_NAME = "WebDeskRemote"
 DEFAULT_SERVICE_PREFS: dict[str, Any] = {
@@ -138,7 +141,8 @@ def build_autostart_command(
     python_exe: Path | None = None,
 ) -> str:
     py = _preferred_pythonw(python_exe)
-    return f'"{py}" -m host.launcher autostart --config "{config_path}"'
+    launcher_script = Path(__file__).resolve()
+    return f'"{py}" "{launcher_script}" autostart --config "{config_path}"'
 
 
 def enable_autostart(
@@ -212,7 +216,7 @@ def fetch_health(base_url: str, timeout: float = 0.8) -> dict[str, Any] | None:
     return None
 
 
-def _is_pid_running(pid: int) -> bool:
+def _is_pid_running(pid: int, name_contains: str | None = None) -> bool:
     if pid <= 0:
         return False
     if sys.platform == "win32":
@@ -220,8 +224,16 @@ def _is_pid_running(pid: int) -> bool:
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
             capture_output=True,
             text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        return str(pid) in proc.stdout
+        for line in proc.stdout.splitlines():
+            if f'"{pid}"' in line:
+                if name_contains:
+                    image_name = line.split(",", 1)[0].strip('" ').lower()
+                    if name_contains.lower() not in image_name:
+                        return False
+                return True
+        return False
     try:
         os.kill(pid, 0)
         return True
@@ -371,6 +383,7 @@ def start_all(
     mock_desktop: bool = False,
     keep_awake: bool = False,
     custom_server_url: str = "",
+    quiet: bool = False,
 ) -> dict[str, Any]:
     s_dir = state_dir or config_path.parent
     s_dir.mkdir(parents=True, exist_ok=True)
@@ -382,16 +395,25 @@ def start_all(
     if custom_ws:
         base_url = ws_url_to_http_base(custom_ws)
         health: dict[str, Any] = {}
+        # Clear any leftover local Quick Tunnel when operating in Fixed Cloud mode
+        tun_pid = _read_pid(s_dir / "tunnel.pid")
+        if tun_pid and _pid_alive(tun_pid):
+            _terminate_pid(tun_pid)
+        (s_dir / "tunnel.pid").unlink(missing_ok=True)
+        (s_dir / "tunnel_url.txt").unlink(missing_ok=True)
     else:
         base_url = ensure_server_running(port, s_dir)
         health = fetch_health(base_url) or {}
 
     host_pid_file = s_dir / "host.pid"
     existing_host_pid = _read_pid(host_pid_file)
-    host_running = bool(existing_host_pid and _is_pid_running(existing_host_pid))
+    host_running = bool(
+        existing_host_pid and _is_pid_running(existing_host_pid, name_contains="python")
+    )
 
+    started_host = False
     if not host_running or (not custom_ws and int(health.get("online_hosts", 0)) == 0):
-        if existing_host_pid and _is_pid_running(existing_host_pid):
+        if host_running and existing_host_pid:
             _terminate_pid(existing_host_pid)
         cmd = [
             sys.executable,
@@ -409,6 +431,7 @@ def start_all(
         if keep_awake:
             cmd.append("--keep-awake")
         _spawn_background(cmd, log_path=s_dir / "host.log", pid_file=host_pid_file)
+        started_host = True
 
         if not custom_ws:
             deadline = time.monotonic() + 12.0
@@ -420,11 +443,12 @@ def start_all(
                 time.sleep(0.15)
 
     lan_ip = discover_lan_ip()
-    print("WebDesk Remote is running!")
-    print(f"  Local URL : {base_url}")
-    if not custom_ws:
-        print(f"  LAN URL   : http://{lan_ip}:{port}")
-    print(f"  Logs      : {s_dir}")
+    if not quiet or started_host:
+        print("WebDesk Remote is running!")
+        print(f"  Local URL : {base_url}")
+        if not custom_ws:
+            print(f"  LAN URL   : http://{lan_ip}:{port}")
+        print(f"  Logs      : {s_dir}")
 
     if open_browser:
         webbrowser.open(base_url)
@@ -447,15 +471,14 @@ def start_supervisor(
     s_dir.mkdir(parents=True, exist_ok=True)
     sup_pid_file = s_dir / "supervisor.pid"
     existing = _read_pid(sup_pid_file)
-    if existing and _is_pid_running(existing):
+    if existing and _is_pid_running(existing, name_contains="python"):
         return existing
 
     py = str(_preferred_pythonw())
     cmd = [
         py,
         "-u",
-        "-m",
-        "host.launcher",
+        str(Path(__file__).resolve()),
         "watch",
         "--port",
         str(port),
@@ -473,6 +496,7 @@ def run_watch_loop(
     mock_desktop: bool = False,
 ) -> int:
     """Always-on background supervisor loop: keeps host, signaling server, and tunnel healthy."""
+    os.chdir(str(PROJECT_ROOT))
     state_dir = config_path.parent
     state_dir.mkdir(parents=True, exist_ok=True)
     if not config_path.exists():
@@ -482,6 +506,7 @@ def run_watch_loop(
     sup_pid_file = state_dir / "supervisor.pid"
     my_pid = os.getpid()
     sup_pid_file.write_text(str(my_pid), encoding="utf-8")
+    print(f"[supervisor] started pid={my_pid} config={config_path}", flush=True)
 
     while True:
         current = _read_pid(sup_pid_file)
@@ -503,6 +528,7 @@ def run_watch_loop(
                 mock_desktop=mock_desktop,
                 keep_awake=keep_awake,
                 custom_server_url=custom_ws,
+                quiet=True,
             )
             if auto_tunnel and not custom_ws:
                 tun_pid = _read_pid(state_dir / "tunnel.pid")
@@ -522,10 +548,16 @@ def run_watch_loop(
 def stop_all(state_dir: Path = DEFAULT_CONFIG_DIR) -> list[int]:
     stopped: list[int] = []
     # Stop supervisor first so it doesn't revive stopped services
-    for name in ("supervisor.pid", "tunnel.pid", "host.pid", "server.pid"):
+    pid_specs = (
+        ("supervisor.pid", "python"),
+        ("tunnel.pid", "cloudflared"),
+        ("host.pid", "python"),
+        ("server.pid", "python"),
+    )
+    for name, proc_hint in pid_specs:
         pid_file = state_dir / name
         pid = _read_pid(pid_file)
-        if pid and _is_pid_running(pid):
+        if pid and _is_pid_running(pid, name_contains=proc_hint):
             _terminate_pid(pid)
             stopped.append(pid)
         pid_file.unlink(missing_ok=True)
@@ -568,6 +600,7 @@ def main(argv: list[str] | None = None) -> int:
 
     cfg_path = Path(args.config)
     state_dir = cfg_path.parent
+    os.chdir(str(PROJECT_ROOT))
 
     if args.action == "stop":
         stopped = stop_all(state_dir)
@@ -634,15 +667,29 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.action == "autostart":
+        state_dir.mkdir(parents=True, exist_ok=True)
+        autostart_log = state_dir / "autostart.log"
+        stamp = time.strftime("%Y-%m-%d %H:%M:%S")
         if not cfg_path.exists():
+            autostart_log.write_text(
+                f"[{stamp}] skipped: config not found at {cfg_path}\n",
+                encoding="utf-8",
+            )
             return 0
-        prefs = load_service_prefs(state_dir)
-        start_supervisor(
-            port=int(prefs.get("port") or args.port),
-            config_path=cfg_path,
-            state_dir=state_dir,
-            mock_desktop=args.mock_desktop,
-        )
+        try:
+            prefs = load_service_prefs(state_dir)
+            sup_pid = start_supervisor(
+                port=int(prefs.get("port") or args.port),
+                config_path=cfg_path,
+                state_dir=state_dir,
+                mock_desktop=args.mock_desktop,
+            )
+            with autostart_log.open("a", encoding="utf-8") as fh:
+                fh.write(f"[{stamp}] supervisor running pid={sup_pid} port={prefs.get('port') or args.port}\n")
+        except Exception as exc:
+            with autostart_log.open("a", encoding="utf-8") as fh:
+                fh.write(f"[{stamp}] autostart error: {exc}\n")
+            return 1
         return 0
 
     if args.action == "watch":
@@ -656,6 +703,8 @@ def main(argv: list[str] | None = None) -> int:
         pin = args.pin.strip() or _prompt_confirmed_pin("Enter a NEW Access PIN")
         stop_all(state_dir)
         reset_host_pin(pin, config_path=cfg_path, port=args.port)
+        prefs = load_service_prefs(state_dir)
+        custom_ws = "" if args.local else str(prefs.get("custom_server_url") or "")
         print("PIN updated cleanly. Starting WebDesk Remote...")
         start_all(
             port=args.port,
@@ -663,17 +712,33 @@ def main(argv: list[str] | None = None) -> int:
             state_dir=state_dir,
             open_browser=not args.no_browser,
             mock_desktop=args.mock_desktop,
+            keep_awake=bool(args.keep_awake or prefs.get("keep_awake", False)),
+            custom_server_url=custom_ws,
         )
         return 0
 
     if args.action == "phone":
-        start_all(
+        prefs = load_service_prefs(state_dir)
+        custom_ws = "" if args.local else str(prefs.get("custom_server_url") or "").strip()
+        keep_awake = bool(args.keep_awake or prefs.get("keep_awake", False))
+        res = start_all(
             port=args.port,
             config_path=cfg_path,
             state_dir=state_dir,
             open_browser=False,
             mock_desktop=args.mock_desktop,
+            keep_awake=keep_awake,
+            custom_server_url=custom_ws,
         )
+        if custom_ws:
+            phone_url = res["base_url"]
+            print("\n====================================================")
+            print("  FIXED CLOUD PHONE ACCESS READY (Bookmark forever):")
+            print(f"  {phone_url}")
+            print("====================================================\n")
+            if not args.no_browser:
+                webbrowser.open(phone_url)
+            return 0
         tunnel_url = start_cloudflared_tunnel(args.port, state_dir=state_dir)
         print("\n====================================================")
         print("  FREE PHONE ACCESS READY (Open this on your phone):")
@@ -699,12 +764,16 @@ def main(argv: list[str] | None = None) -> int:
             cmd.append("--mock-desktop")
         return subprocess.call(cmd, cwd=str(PROJECT_ROOT))
 
+    prefs = load_service_prefs(state_dir)
+    custom_ws = "" if args.local else str(prefs.get("custom_server_url") or "").strip()
     start_all(
         port=args.port,
         config_path=cfg_path,
         state_dir=state_dir,
         open_browser=not args.no_browser,
         mock_desktop=args.mock_desktop,
+        keep_awake=bool(args.keep_awake or prefs.get("keep_awake", False)),
+        custom_server_url=custom_ws,
     )
     return 0
 

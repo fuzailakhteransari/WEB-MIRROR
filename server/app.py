@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
 import hmac
 import json
+import mimetypes
 import struct
+from pathlib import Path
 from typing import Any
+
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+mimetypes.add_type("image/svg+xml", ".svg")
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
@@ -98,6 +104,41 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             if url.startswith("https://"):
                 return {"url": url}
         return {"url": None}
+
+    def _find_phone_apk() -> Path | None:
+        root = Path(__file__).resolve().parent.parent
+        candidates = [
+            root / "dist" / "webdesk-phone-host.apk",
+            root / "android-host" / "app" / "build" / "outputs" / "apk" / "release" / "app-release.apk",
+            root / "android-host" / "app" / "build" / "outputs" / "apk" / "debug" / "app-debug.apk",
+        ]
+        for candidate in candidates:
+            if candidate.is_file():
+                return candidate
+        return None
+
+    @app.get("/api/phone-apk")
+    async def phone_apk_status(_: None = Depends(require_http_token)) -> dict[str, Any]:
+        apk = _find_phone_apk()
+        if not apk:
+            return {"available": False, "filename": "webdesk-phone-host.apk", "size_bytes": 0}
+        return {
+            "available": True,
+            "filename": "webdesk-phone-host.apk",
+            "size_bytes": apk.stat().st_size,
+            "download_url": "/downloads/webdesk-phone-host.apk",
+        }
+
+    @app.get("/downloads/webdesk-phone-host.apk")
+    async def download_phone_apk(_: None = Depends(require_http_token)) -> FileResponse:
+        apk = _find_phone_apk()
+        if not apk:
+            raise HTTPException(status_code=404, detail="Android Host APK not built yet")
+        return FileResponse(
+            apk,
+            media_type="application/vnd.android.package-archive",
+            filename="webdesk-phone-host.apk",
+        )
 
     @app.get("/api/qr")
     async def qr_svg(
@@ -249,6 +290,21 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                     await session.viewer_ws.send_json(msg)
                     if msg_type in {"session_reject", "session_end"}:
                         state.end_session(session.session_id)
+                    elif msg_type in {"pake_server_proof", "pairing_accepted"} and session.mode == "me2me":
+                        replaced = state.end_other_sessions(
+                            session.host_id, keep_session_id=session.session_id
+                        )
+                        for old_sess in replaced:
+                            try:
+                                await old_sess.viewer_ws.send_json(
+                                    {
+                                        "type": "session_end",
+                                        "session_id": old_sess.session_id,
+                                        "payload": {"reason": "Session resumed from another device or tab"},
+                                    }
+                                )
+                            except Exception:
+                                pass
 
         except WebSocketDisconnect:
             pass
@@ -272,10 +328,28 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
             await ws.close(code=4401, reason="Unauthorized")
             return
         await ws.accept()
+        awaiting_pong = False
         try:
             while True:
-                msg = await ws.receive_json()
+                try:
+                    msg = await asyncio.wait_for(
+                        ws.receive_json(),
+                        timeout=15.0 if awaiting_pong else 20.0,
+                    )
+                except asyncio.TimeoutError:
+                    if awaiting_pong:
+                        break
+                    awaiting_pong = True
+                    await ws.send_json({"type": "ping"})
+                    continue
+
+                awaiting_pong = False
                 msg_type = msg.get("type")
+                if msg_type == "pong":
+                    continue
+                if msg_type == "ping":
+                    await ws.send_json({"type": "pong"})
+                    continue
                 payload = msg.get("payload") or {}
 
                 if msg_type == "connect_host":
@@ -299,6 +373,8 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                             "payload": {
                                 "host_name": host.name,
                                 "mode": host.mode,
+                                "platform": host.platform,
+                                "capabilities": host.capabilities,
                                 "monitors": [m.model_dump() for m in host.monitors],
                             },
                         }
@@ -313,6 +389,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                                 "sdp_offer": payload.get("sdp_offer", ""),
                                 "pairing_id": payload.get("pairing_id"),
                                 "control_only": bool(payload.get("control_only", False)),
+                                "ws_direct": bool(payload.get("ws_direct", False)),
                                 "viewer_label": payload.get("viewer_label", "Web Viewer"),
                             },
                         }
@@ -348,6 +425,8 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                             "payload": {
                                 "host_name": host.name,
                                 "mode": "it2me",
+                                "platform": host.platform,
+                                "capabilities": host.capabilities,
                                 "monitors": [m.model_dump() for m in host.monitors],
                             },
                         }
@@ -360,6 +439,7 @@ def create_app(config: ServerConfig | None = None) -> FastAPI:
                             "payload": {
                                 "mode": "it2me",
                                 "sdp_offer": payload.get("sdp_offer", ""),
+                                "ws_direct": bool(payload.get("ws_direct", False)),
                                 "viewer_label": payload.get("viewer_label", "Support Helper"),
                             },
                         }

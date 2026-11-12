@@ -78,14 +78,40 @@ def _filetime_to_int(ft: _FILETIME) -> int:
 
 
 def validate_http_url(url: str) -> str:
-    """Validate and return clean http(s) URL, rejecting javascript:/file:/shell inputs."""
+    """Validate and return clean http(s) URL, auto-prepending https:// for bare domains."""
+    import re
+
     cleaned = (url or "").strip()
-    if not cleaned:
-        raise ValueError("URL cannot be empty")
-    parsed = urllib.parse.urlparse(cleaned)
+    if not cleaned or any(ch.isspace() for ch in cleaned):
+        raise ValueError("Only http:// and https:// URLs are allowed" if cleaned else "URL cannot be empty")
+
+    if "://" in cleaned:
+        parsed = urllib.parse.urlparse(cleaned)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            raise ValueError("Only http:// and https:// URLs are allowed")
+        return cleaned
+
+    if ":" in cleaned:
+        # Distinguish host:port (e.g. localhost:8080) from dangerous schemes (javascript:, file:, data:)
+        port_match = re.match(r"^([a-zA-Z0-9.-]+):(\d+)(?:[/?#].*)?$", cleaned)
+        if not port_match or (
+            "." not in port_match.group(1) and port_match.group(1).lower() != "localhost"
+        ):
+            raise ValueError("Only http:// and https:// URLs are allowed")
+        host_part = port_match.group(1).lower()
+        scheme = "http" if host_part in {"localhost", "127.0.0.1"} else "https"
+        candidate = f"{scheme}://{cleaned}"
+    else:
+        if cleaned.startswith("/"):
+            raise ValueError("Only http:// and https:// URLs are allowed")
+        lowered = cleaned.lower()
+        scheme = "http" if lowered.startswith(("localhost", "127.0.0.1")) else "https"
+        candidate = f"{scheme}://{cleaned}"
+
+    parsed = urllib.parse.urlparse(candidate)
     if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
         raise ValueError("Only http:// and https:// URLs are allowed")
-    return cleaned
+    return candidate
 
 
 class QuickActionExecutor(ABC):
@@ -177,8 +203,11 @@ class Win32QuickActionExecutor(QuickActionExecutor):
         py_exe = Path(sys.executable)
         pyw = py_exe.with_name("pythonw.exe")
         exe = str(pyw if pyw.exists() else py_exe)
+        curtain_script = Path(__file__).resolve().with_name("privacy_curtain.py")
+        project_root = curtain_script.parent.parent
         self._curtain_proc = subprocess.Popen(
-            [exe, "-m", "host.privacy_curtain"],
+            [exe, str(curtain_script)],
+            cwd=str(project_root),
             creationflags=subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
@@ -188,14 +217,15 @@ class Win32QuickActionExecutor(QuickActionExecutor):
     def _stop_privacy_curtain(self) -> bool:
         was_active = self._is_curtain_running()
         if self._curtain_proc is not None:
-            try:
-                self._curtain_proc.terminate()
-                self._curtain_proc.wait(timeout=1.5)
-            except Exception:
+            if was_active:
                 try:
-                    self._curtain_proc.kill()
+                    self._curtain_proc.terminate()
+                    self._curtain_proc.wait(timeout=1.5)
                 except Exception:
-                    pass
+                    try:
+                        self._curtain_proc.kill()
+                    except Exception:
+                        pass
             self._curtain_proc = None
         return was_active
 
@@ -333,30 +363,58 @@ class Win32QuickActionExecutor(QuickActionExecutor):
 
         if action == "launch_preset":
             preset = str(p.get("preset") or "")
-            if preset == "downloads":
-                os.startfile(str(Path.home() / "Downloads"))  # type: ignore[attr-defined]
-                return True, "Opened Downloads folder."
-            preset_cmds: dict[str, list[str]] = {
-                "explorer": ["explorer.exe"],
-                "taskmgr": ["taskmgr.exe"],
-                "cmd": ["cmd.exe"],
-                "notepad": ["notepad.exe"],
-                "calc": ["calc.exe"],
-                "settings": ["cmd.exe", "/c", "start", "ms-settings:"],
+            try:
+                ctypes.windll.user32.AllowSetForegroundWindow(-1)
+            except Exception:
+                pass
+            if preset == "cmd":
+                try:
+                    subprocess.Popen(
+                        ["cmd.exe"],
+                        cwd=str(Path.home()),
+                        creationflags=(
+                            subprocess.CREATE_NEW_CONSOLE | subprocess.CREATE_NEW_PROCESS_GROUP
+                        ),
+                        close_fds=True,
+                    )
+                    return True, "Launched Terminal (cmd)."
+                except OSError as exc:
+                    return False, f"Could not launch Terminal: {exc}"
+
+            shell_targets: dict[str, tuple[str, str]] = {
+                "downloads": (str(Path.home() / "Downloads"), "Opened Downloads folder."),
+                "explorer": ("explorer.exe", "Launched Explorer."),
+                "taskmgr": ("taskmgr.exe", "Launched Task Manager."),
+                "notepad": ("notepad.exe", "Launched Notepad."),
+                "calc": ("calc.exe", "Launched Calculator."),
+                "settings": ("ms-settings:", "Launched Windows Settings."),
             }
-            cmd = preset_cmds.get(preset)
-            if not cmd:
+            target_info = shell_targets.get(preset)
+            if not target_info:
                 return False, f"Unknown app preset: {preset}"
-            subprocess.Popen(cmd, creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
-            return True, f"Launched {preset}."
+            target, ok_msg = target_info
+            try:
+                os.startfile(target)  # type: ignore[attr-defined]
+                return True, ok_msg
+            except OSError as exc:
+                return False, f"Could not launch {preset}: {exc}"
 
         if action == "open_url":
             try:
                 url = validate_http_url(str(p.get("url") or ""))
             except ValueError as exc:
                 return False, str(exc)
-            webbrowser.open(url)
-            return True, f"Opened {url} in PC browser."
+            try:
+                ctypes.windll.user32.AllowSetForegroundWindow(-1)
+            except Exception:
+                pass
+            try:
+                os.startfile(url)  # type: ignore[attr-defined]
+                return True, f"Opened {url} in PC browser."
+            except OSError as exc:
+                if webbrowser.open(url):
+                    return True, f"Opened {url} in PC browser."
+                return False, f"Could not open {url}: {exc}"
 
         if action == "empty_recycle_bin":
             flags = SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND

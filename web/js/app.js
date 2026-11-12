@@ -1,5 +1,5 @@
-import { InputCaptureController, getVideoContentRect, isTouchCapable } from "./input_capture.js?v=6";
-import { WebRTCViewerClient } from "./webrtc_client.js?v=4";
+import { InputCaptureController, getVideoContentRect, isTouchCapable } from "./input_capture.js?v=8";
+import { WebRTCViewerClient } from "./webrtc_client.js?v=7";
 
 const PAIRING_STORAGE_KEY = "webdesk_pairings_v1";
 const WORKSPACE_TOKEN_KEY = "webdesk_workspace_token";
@@ -14,7 +14,15 @@ const els = {
   panelSupport: document.getElementById("panel-support"),
   serverStatusPill: document.getElementById("server-status-pill"),
   btnWorkspaceToken: document.getElementById("btn-workspace-token"),
+  btnPhoneSetup: document.getElementById("btn-phone-setup"),
   btnRefreshHosts: document.getElementById("btn-refresh-hosts"),
+  phoneSetupModal: document.getElementById("phone-setup-modal"),
+  btnPhoneSetupClose: document.getElementById("btn-phone-setup-close"),
+  phoneSetupServerUrl: document.getElementById("phone-setup-server-url"),
+  phoneSetupQr: document.getElementById("phone-setup-qr"),
+  btnCopyPhoneServer: document.getElementById("btn-copy-phone-server"),
+  btnDownloadPhoneApk: document.getElementById("btn-download-phone-apk"),
+  phoneApkStatus: document.getElementById("phone-apk-status"),
   tunnelBanner: document.getElementById("tunnel-banner"),
   tunnelUrlLink: document.getElementById("tunnel-url-link"),
   tunnelQrImg: document.getElementById("tunnel-qr-img"),
@@ -40,7 +48,11 @@ const els = {
   remoteVideo: document.getElementById("remote-video"),
   fallbackCanvas: document.getElementById("fallback-canvas"),
   trackpadCursor: document.getElementById("trackpad-cursor"),
+  touchRipple: document.getElementById("touch-ripple"),
   mobileKbInput: document.getElementById("mobile-kb-input"),
+  mobileNavDock: document.getElementById("mobile-nav-dock"),
+  sidebarCombosWindows: document.getElementById("sidebar-combos-windows"),
+  sidebarCombosAndroid: document.getElementById("sidebar-combos-android"),
   sessionOverlay: document.getElementById("session-overlay"),
   sessionStatusText: document.getElementById("session-status-text"),
   btnCancelConnecting: document.getElementById("btn-cancel-connecting"),
@@ -62,8 +74,13 @@ const els = {
   btnClipboardPull: document.getElementById("btn-clipboard-pull"),
   clipboardStatus: document.getElementById("clipboard-status"),
   pasteTextInput: document.getElementById("paste-text-input"),
+  btnClearPasteBox: document.getElementById("btn-clear-paste-box"),
   btnPasteText: document.getElementById("btn-paste-text"),
+  btnRemoteBackspace: document.getElementById("btn-remote-backspace"),
+  btnRemoteDelete: document.getElementById("btn-remote-delete"),
+  btnRemoteClearText: document.getElementById("btn-remote-clear-text"),
   btnQuickKeyboard: document.getElementById("btn-quick-keyboard"),
+  btnQuickBackspace: document.getElementById("btn-quick-backspace"),
   btnQuickMode: document.getElementById("btn-quick-mode"),
   btnZoomOut: document.getElementById("btn-zoom-out"),
   btnZoomReset: document.getElementById("btn-zoom-reset"),
@@ -91,8 +108,13 @@ const els = {
   qaStatBattery: document.getElementById("qa-stat-battery"),
   qaStatLock: document.getElementById("qa-stat-lock"),
   qaStatAwake: document.getElementById("qa-stat-awake"),
+  qaStatNet: document.getElementById("qa-stat-net"),
+  qaWindowsCards: document.getElementById("qa-windows-cards"),
+  qaAndroidCards: document.getElementById("qa-android-cards"),
   qaUrlInput: document.getElementById("qa-url-input"),
   qaBtnOpenUrl: document.getElementById("qa-btn-open-url"),
+  qaAndroidUrlInput: document.getElementById("qa-android-url-input"),
+  qaAndroidBtnOpenUrl: document.getElementById("qa-android-btn-open-url"),
   qaBtnSnapshot: document.getElementById("qa-btn-snapshot"),
   qaSnapshotImg: document.getElementById("qa-snapshot-img"),
   qaClipInput: document.getElementById("qa-clip-input"),
@@ -109,7 +131,31 @@ let pendingHost = null;
 let pendingControlOnly = false;
 let activeSessionOpts = null;
 let activeControlOnly = false;
+let activeHostPlatform = "windows";
+let activeHostCapabilities = [];
+let latestTunnelUrl = "";
 let workspaceTokenRequired = false;
+
+function isMobileTarget(platform = activeHostPlatform, capabilities = activeHostCapabilities) {
+  return platform === "android" || (Array.isArray(capabilities) && capabilities.includes("mobile"));
+}
+
+function triggerTouchRipple(clientX, clientY, kind = "tap") {
+  const el = els.touchRipple;
+  if (!el) return;
+  el.classList.remove("hidden", "long-press");
+  if (kind === "long") el.classList.add("long-press");
+  el.style.left = `${clientX}px`;
+  el.style.top = `${clientY}px`;
+  // Restart animation cleanly
+  el.style.animation = "none";
+  void el.offsetWidth;
+  el.style.animation = "";
+  clearTimeout(triggerTouchRipple._timer);
+  triggerTouchRipple._timer = setTimeout(() => {
+    el.classList.add("hidden");
+  }, 380);
+}
 
 function getWorkspaceToken() {
   return localStorage.getItem(WORKSPACE_TOKEN_KEY) || "";
@@ -175,6 +221,7 @@ async function refreshHealthAndHosts() {
     try {
       const tunResp = await apiFetch("/api/tunnel-url");
       const tun = await tunResp.json();
+      latestTunnelUrl = tun.url || "";
       if (tun.url) {
         els.tunnelUrlLink.href = tun.url;
         els.tunnelUrlLink.textContent = tun.url;
@@ -188,6 +235,7 @@ async function refreshHealthAndHosts() {
         els.tunnelBanner.classList.add("hidden");
       }
     } catch {
+      latestTunnelUrl = "";
       els.tunnelBanner.classList.add("hidden");
     }
   } catch (err) {
@@ -207,15 +255,19 @@ function renderHosts(hosts) {
     card.dataset.hostId = h.host_id;
 
     const paired = Boolean(pairings[h.host_id]);
+    const isAndroid = isMobileTarget(h.platform, h.capabilities);
     const monSummary =
       h.monitors && h.monitors.length
         ? `${h.monitors.length} display${h.monitors.length > 1 ? "s" : ""} (${h.monitors[0].width}x${h.monitors[0].height})`
         : h.platform;
+    const platformLabel = isAndroid ? "Android Phone" : "Desktop";
+    const chipClass = isAndroid ? "platform-chip platform-chip-android" : "platform-chip";
 
     card.innerHTML = `
       <div>
         <div class="host-top">
           <div>
+            <div class="${chipClass}">${platformLabel}</div>
             <div class="host-name"></div>
             <div class="muted small">${monSummary} • Last seen ${formatLastSeen(h.last_seen)}</div>
           </div>
@@ -225,10 +277,10 @@ function renderHosts(hosts) {
         </div>
       </div>
       <div class="host-actions">
-        <button class="btn btn-primary btn-connect" ${h.status !== "online" ? "disabled" : ""}>
-          ${paired ? "Connect (Paired)" : "Connect"}
+        <button class="btn btn-primary btn-connect" ${h.status === "offline" ? "disabled" : ""}>
+          ${h.status === "busy" ? (paired ? "Reconnect (Paired)" : "Reconnect") : paired ? "Connect (Paired)" : "Connect"}
         </button>
-        <button class="btn btn-secondary btn-quick-actions" ${h.status !== "online" ? "disabled" : ""}>
+        <button class="btn btn-secondary btn-quick-actions" ${h.status === "offline" ? "disabled" : ""}>
           Quick Actions
         </button>
         ${paired ? '<button class="btn btn-ghost btn-sm btn-forget">Forget PIN</button>' : ""}
@@ -271,6 +323,8 @@ function onHostClicked(host, controlOnly = false) {
       mode: "me2me",
       hostId: host.host_id,
       hostName: host.name,
+      hostPlatform: host.platform || "windows",
+      hostCapabilities: host.capabilities || [],
       pairing,
       controlOnly: pendingControlOnly,
     });
@@ -296,9 +350,15 @@ function renderSystemStatus(st) {
   if (!st || typeof st !== "object") return;
   if (typeof st.cpu_percent === "number") {
     els.qaStatCpu.textContent = `CPU: ${st.cpu_percent}%`;
+    els.qaStatCpu.classList.remove("hidden");
+  } else if (typeof st.accessibility_enabled === "boolean") {
+    els.qaStatCpu.textContent = st.accessibility_enabled ? "Touch: Ready" : "Touch: Enable Accessibility";
+    els.qaStatCpu.className = st.accessibility_enabled ? "pill pill-online" : "pill pill-error";
   }
   if (typeof st.memory_used_gb === "number") {
     els.qaStatRam.textContent = `RAM: ${st.memory_used_gb}/${st.memory_total_gb} GB (${st.memory_percent}%)`;
+  } else if (typeof st.ram_used_mb === "number") {
+    els.qaStatRam.textContent = `RAM: ${(st.ram_used_mb / 1024).toFixed(1)}/${(st.ram_total_mb / 1024).toFixed(1)} GB`;
   }
   if (typeof st.battery_percent === "number") {
     const chg = st.power_plugged ? "⚡" : "";
@@ -312,12 +372,28 @@ function renderSystemStatus(st) {
   } else if (st.privacy_lock_active) {
     els.qaStatLock.textContent = "Lock: Privacy Shield";
     els.qaStatLock.className = "pill pill-error";
+  } else if (st.device_locked === true) {
+    els.qaStatLock.textContent = "Lock: Screen Locked";
+    els.qaStatLock.className = "pill pill-error";
   } else {
     els.qaStatLock.textContent = "Lock: Unlocked";
     els.qaStatLock.className = "pill pill-online";
   }
-  els.qaStatAwake.textContent = st.keep_awake ? "Keep Awake: ON" : "Keep Awake: Off";
-  els.qaStatAwake.className = st.keep_awake ? "pill pill-online" : "pill";
+  if (typeof st.screen_on === "boolean") {
+    els.qaStatAwake.textContent = st.screen_on ? "Screen: Awake" : "Screen: Asleep";
+    els.qaStatAwake.className = st.screen_on ? "pill pill-online" : "pill";
+  } else {
+    els.qaStatAwake.textContent = st.keep_awake ? "Keep Awake: ON" : "Keep Awake: Off";
+    els.qaStatAwake.className = st.keep_awake ? "pill pill-online" : "pill";
+  }
+  if (els.qaStatNet) {
+    if (st.network_type) {
+      els.qaStatNet.textContent = `Net: ${st.network_type}`;
+      els.qaStatNet.classList.remove("hidden");
+    } else {
+      els.qaStatNet.classList.add("hidden");
+    }
+  }
 }
 
 function showQaFeedback(message, ok = true) {
@@ -326,31 +402,70 @@ function showQaFeedback(message, ok = true) {
   els.qaFeedback.classList.add(ok ? "qa-ok" : "qa-err");
 }
 
+function applyHostPlatformUi() {
+  const isMobile = isMobileTarget();
+  if (els.mobileNavDock) els.mobileNavDock.classList.toggle("hidden", !isMobile);
+  if (els.sidebarCombosWindows) els.sidebarCombosWindows.classList.toggle("hidden", isMobile);
+  if (els.sidebarCombosAndroid) els.sidebarCombosAndroid.classList.toggle("hidden", !isMobile);
+  if (els.qaWindowsCards) els.qaWindowsCards.classList.toggle("hidden", isMobile);
+  if (els.qaAndroidCards) els.qaAndroidCards.classList.toggle("hidden", !isMobile);
+  if (els.stage) els.stage.classList.toggle("mobile-stage", isMobile);
+}
+
 function openQuickActionsPanel({ hostName, controlOnly }) {
   activeControlOnly = Boolean(controlOnly);
-  els.qaHostTitle.textContent = `${hostName || "Remote PC"} — Quick Actions`;
+  applyHostPlatformUi();
+  const label = isMobileTarget() ? "Remote Phone" : "Remote PC";
+  els.qaHostTitle.textContent = `${hostName || label} — Quick Actions`;
   els.qaModeSub.textContent = activeControlOnly
-    ? "Direct encrypted PC commands (zero video bandwidth)"
+    ? "Direct encrypted commands (zero video bandwidth)"
     : "Live mirroring active in background";
   els.qaBtnMirror.textContent = activeControlOnly ? "Screen Mirror" : "Back to Mirror";
   els.quickActionsView.classList.remove("hidden");
   if (activeClient) activeClient.requestSystemStatus();
 }
 
-async function startSession({ mode, hostId, hostName, supportCode, pin, pairing, rememberDevice, controlOnly = false }) {
+async function startSession({
+  mode,
+  hostId,
+  hostName,
+  hostPlatform = "windows",
+  hostCapabilities = [],
+  supportCode,
+  pin,
+  pairing,
+  rememberDevice,
+  controlOnly = false,
+}) {
   if (activeClient) activeClient.close();
-  activeSessionOpts = { mode, hostId, hostName, supportCode, pin, pairing, rememberDevice };
+  activeHostPlatform = hostPlatform || "windows";
+  activeHostCapabilities = Array.isArray(hostCapabilities) ? hostCapabilities : [];
+  const wsDirect = Boolean(controlOnly || activeHostCapabilities.includes("ws_direct"));
+  activeSessionOpts = {
+    mode,
+    hostId,
+    hostName,
+    hostPlatform: activeHostPlatform,
+    hostCapabilities: activeHostCapabilities,
+    supportCode,
+    pin,
+    pairing,
+    rememberDevice,
+  };
   activeControlOnly = Boolean(controlOnly);
+  applyHostPlatformUi();
 
   els.portalHeader.classList.add("hidden");
   els.portalView.classList.add("hidden");
   els.quickActionsView.classList.add("hidden");
   els.sessionView.classList.remove("hidden");
   els.sessionOverlay.classList.remove("hidden");
-  els.sessionStatusText.textContent = "Fetching ICE config...";
-  els.hudHostName.textContent = hostName || "Remote PC";
+  els.sessionStatusText.textContent = wsDirect
+    ? "Connecting encrypted WSS stream..."
+    : "Fetching ICE config...";
+  els.hudHostName.textContent = hostName || (isMobileTarget() ? "Remote Phone" : "Remote PC");
   els.sidebarHostTitle.textContent = hostName || "Remote Session";
-  els.hudTransport.textContent = controlOnly ? "Quick Actions" : "Negotiating";
+  els.hudTransport.textContent = controlOnly ? "Quick Actions" : wsDirect ? "WSS Direct" : "Negotiating";
   els.hudMetrics.textContent = "-- ms | -- fps";
   els.sessionSidebar.classList.remove("open");
   els.btnToggleSidebar.classList.remove("open");
@@ -360,7 +475,7 @@ async function startSession({ mode, hostId, hostName, supportCode, pin, pairing,
   els.fallbackCanvas.classList.add("hidden");
 
   let iceServers = [];
-  if (!controlOnly) {
+  if (!wsDirect) {
     try {
       const iceResp = await apiFetch("/api/ice-config");
       const iceJson = await iceResp.json();
@@ -381,6 +496,11 @@ async function startSession({ mode, hostId, hostName, supportCode, pin, pairing,
     },
     onReady: (info) => {
       els.sessionOverlay.classList.add("hidden");
+      if (info.platform) activeHostPlatform = info.platform;
+      if (Array.isArray(info.capabilities)) activeHostCapabilities = info.capabilities;
+      applyHostPlatformUi();
+      const mobileHost = isMobileTarget();
+
       if (info.control_only) {
         els.sessionView.classList.add("hidden");
         renderSystemStatus(info.system_status);
@@ -401,10 +521,12 @@ async function startSession({ mode, hostId, hostName, supportCode, pin, pairing,
       inputController = new InputCaptureController({
         stageEl: els.stage,
         videoEl: activeMediaEl,
+        mobileHost,
         sendInput: (ev) => activeClient && activeClient.sendInput(ev),
+        onTouchFeedback: (x, y, kind) => triggerTouchRipple(x, y, kind),
         onZoomChange: (z) => syncZoomUi(z),
-        onCursorMove: (nx, ny, mode) => {
-          if (mode === "trackpad") {
+        onCursorMove: (nx, ny, modeName) => {
+          if (modeName === "trackpad") {
             const box = getVideoContentRect(activeMediaEl);
             els.trackpadCursor.style.left = `${box.left + nx * box.width}px`;
             els.trackpadCursor.style.top = `${box.top + ny * box.height}px`;
@@ -486,7 +608,16 @@ async function startSession({ mode, hostId, hostName, supportCode, pin, pairing,
   });
 
   try {
-    await activeClient.connect({ mode, hostId, supportCode, pin, pairing, rememberDevice, controlOnly });
+    await activeClient.connect({
+      mode,
+      hostId,
+      supportCode,
+      pin,
+      pairing,
+      rememberDevice,
+      controlOnly,
+      wsDirect,
+    });
   } catch (err) {
     showPortalWithError(err.message || "Failed to connect");
   }
@@ -524,8 +655,10 @@ function teardownSessionUi() {
   syncZoomUi(1);
   els.remoteVideo.classList.remove("hidden");
   els.fallbackCanvas.classList.add("hidden");
-  els.stage.classList.remove("fit-original-stage");
+  els.stage.classList.remove("fit-original-stage", "mobile-stage");
   els.trackpadCursor.classList.add("hidden");
+  if (els.touchRipple) els.touchRipple.classList.add("hidden");
+  if (els.mobileNavDock) els.mobileNavDock.classList.add("hidden");
   els.btnFitMode.textContent = "Fit: Contain";
   els.btnQuickFit.textContent = "1:1";
   els.quickActionsView.classList.add("hidden");
@@ -533,6 +666,8 @@ function teardownSessionUi() {
   els.qaSnapshotImg.classList.add("hidden");
   els.qaSnapshotImg.removeAttribute("src");
   activeControlOnly = false;
+  activeHostPlatform = "windows";
+  activeHostCapabilities = [];
   els.sessionView.classList.add("hidden");
   els.portalHeader.classList.remove("hidden");
   els.portalView.classList.remove("hidden");
@@ -570,6 +705,53 @@ els.tabSupport.addEventListener("click", () => {
 });
 
 els.btnRefreshHosts.addEventListener("click", refreshHealthAndHosts);
+
+if (els.btnPhoneSetup) {
+  els.btnPhoneSetup.addEventListener("click", async () => {
+    const serverUrl = latestTunnelUrl || location.origin;
+    els.phoneSetupServerUrl.textContent = serverUrl;
+    const token = getWorkspaceToken();
+    els.phoneSetupQr.src = `/api/qr?url=${encodeURIComponent(serverUrl)}${token ? `&token=${encodeURIComponent(token)}` : ""}`;
+    els.phoneSetupModal.classList.remove("hidden");
+    try {
+      const resp = await apiFetch("/api/phone-apk");
+      const info = await resp.json();
+      if (info.available) {
+        const mb = (info.size_bytes / (1024 * 1024)).toFixed(1);
+        els.btnDownloadPhoneApk.href = token
+          ? `${info.download_url}?token=${encodeURIComponent(token)}`
+          : info.download_url;
+        els.btnDownloadPhoneApk.classList.remove("hidden");
+        els.phoneApkStatus.textContent = `APK ready (${mb} MB)`;
+      } else {
+        els.btnDownloadPhoneApk.classList.add("hidden");
+        els.phoneApkStatus.textContent = "APK not built into dist/ yet — run android-host build or install via USB.";
+      }
+    } catch {
+      els.btnDownloadPhoneApk.classList.add("hidden");
+    }
+  });
+}
+
+if (els.btnPhoneSetupClose) {
+  els.btnPhoneSetupClose.addEventListener("click", () => {
+    els.phoneSetupModal.classList.add("hidden");
+  });
+}
+
+if (els.btnCopyPhoneServer) {
+  els.btnCopyPhoneServer.addEventListener("click", async () => {
+    const text = els.phoneSetupServerUrl.textContent || "";
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      els.btnCopyPhoneServer.textContent = "Copied!";
+      setTimeout(() => {
+        els.btnCopyPhoneServer.textContent = "Copy Server URL";
+      }, 1500);
+    } catch {}
+  });
+}
 
 // Auto-format 12-digit support code as XXXX-XXXX-XXXX
 els.supportCodeInput.addEventListener("input", () => {
@@ -614,6 +796,8 @@ els.pinForm.addEventListener("submit", (e) => {
     mode: "me2me",
     hostId: host.host_id,
     hostName: host.name,
+    hostPlatform: host.platform || "windows",
+    hostCapabilities: host.capabilities || [],
     pin,
     rememberDevice: remember,
     controlOnly,
@@ -690,13 +874,13 @@ async function toggleFullscreenMode() {
 
 function syncZoomUi(zoom = 1) {
   const zoomed = zoom > 1.01;
-  const label = zoomed ? zoom.toFixed(1).replace(/\.0$/, "") + "x" : "1x";
+  const label = zoomed ? `${zoom.toFixed(1).replace(/\.0$/, "")}x` : "1x";
   if (els.btnZoomReset) {
     els.btnZoomReset.textContent = label;
     els.btnZoomReset.classList.toggle("active", zoomed);
   }
   if (els.btnSidebarZoomReset) {
-    els.btnSidebarZoomReset.textContent = zoomed ? "Reset (" + label + ")" : "Reset 1x";
+    els.btnSidebarZoomReset.textContent = zoomed ? `Reset (${label})` : "Reset 1x";
   }
 }
 
@@ -764,22 +948,78 @@ for (const btn of document.querySelectorAll(".qa-action-btn")) {
   });
 }
 
-for (const btn of document.querySelectorAll(".qa-preset-btn")) {
-  btn.addEventListener("click", () => {
-    if (!activeClient) return;
-    activeClient.sendQuickAction("launch_preset", { preset: btn.dataset.preset });
-  });
+function normalizeQuickUrlInput(raw) {
+  const cleaned = (raw || "").trim();
+  if (!cleaned) return "";
+  if (cleaned.includes("://")) return cleaned;
+  if (/^[a-zA-Z][a-zA-Z0-9+.-]*:/.test(cleaned)) {
+    const hostPort = /^([a-zA-Z0-9.-]+):(\d+)(?:[/?#].*)?$/.exec(cleaned);
+    if (hostPort && (hostPort[1].includes(".") || hostPort[1].toLowerCase() === "localhost")) {
+      const scheme = ["localhost", "127.0.0.1"].includes(hostPort[1].toLowerCase()) ? "http" : "https";
+      return `${scheme}://${cleaned}`;
+    }
+    return cleaned;
+  }
+  const scheme = /^(localhost|127\.0\.0\.1)([/?#:]|$)/i.test(cleaned) ? "http" : "https";
+  return `${scheme}://${cleaned}`;
 }
 
-els.qaBtnOpenUrl.addEventListener("click", () => {
-  if (!activeClient) return;
-  const url = els.qaUrlInput.value.trim();
+function triggerOpenUrl(inputEl) {
+  if (!activeClient || !inputEl) return;
+  const url = normalizeQuickUrlInput(inputEl.value);
   if (!url) {
     showQaFeedback("Enter an http:// or https:// URL first.", false);
     return;
   }
+  showQaFeedback(`Opening ${url}...`, true);
   activeClient.sendQuickAction("open_url", { url });
+}
+
+for (const btn of document.querySelectorAll(".qa-preset-btn")) {
+  btn.addEventListener("click", () => {
+    if (!activeClient) return;
+    showQaFeedback(`Launching ${btn.textContent.trim()}...`, true);
+    activeClient.sendQuickAction("launch_preset", { preset: btn.dataset.preset });
+  });
+}
+
+els.qaBtnOpenUrl.addEventListener("click", () => triggerOpenUrl(els.qaUrlInput));
+els.qaUrlInput.addEventListener("keydown", (e) => {
+  if (e.key === "Enter") {
+    e.preventDefault();
+    triggerOpenUrl(els.qaUrlInput);
+  }
 });
+
+if (els.qaAndroidBtnOpenUrl) {
+  els.qaAndroidBtnOpenUrl.addEventListener("click", () => triggerOpenUrl(els.qaAndroidUrlInput));
+}
+if (els.qaAndroidUrlInput) {
+  els.qaAndroidUrlInput.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") {
+      e.preventDefault();
+      triggerOpenUrl(els.qaAndroidUrlInput);
+    }
+  });
+}
+
+for (const btn of document.querySelectorAll(".mobile-combo-btn")) {
+  btn.addEventListener("click", () => {
+    if (!activeClient) return;
+    activeClient.sendInput({ type: "special_combo", combo: btn.dataset.combo });
+    btn.blur();
+    els.stage.focus({ preventScroll: true });
+  });
+}
+
+for (const btn of document.querySelectorAll(".mobile-qa-btn")) {
+  btn.addEventListener("click", () => {
+    if (!activeClient) return;
+    activeClient.sendQuickAction(btn.dataset.action);
+    btn.blur();
+    els.stage.focus({ preventScroll: true });
+  });
+}
 
 els.qaBtnSnapshot.addEventListener("click", () => {
   if (!activeClient) return;
@@ -835,6 +1075,58 @@ els.selectInputMode.addEventListener("change", () => {
   els.stage.focus({ preventScroll: true });
 });
 
+function sendRemoteKey(keyName) {
+  if (!activeClient) return;
+  activeClient.sendInput({ type: "key_event", code: keyName, key: keyName, down: true });
+  activeClient.sendInput({ type: "key_event", code: keyName, key: keyName, down: false });
+}
+
+function bindRepeatableKeyButton(btn, keyName, { keepKeyboardFocus = false } = {}) {
+  if (!btn) return;
+  let holdTimer = null;
+  let repeatTimer = null;
+  let heldFired = false;
+
+  const stopHold = () => {
+    if (holdTimer) {
+      clearTimeout(holdTimer);
+      holdTimer = null;
+    }
+    if (repeatTimer) {
+      clearInterval(repeatTimer);
+      repeatTimer = null;
+    }
+  };
+
+  btn.addEventListener("pointerdown", (e) => {
+    if (!activeClient) return;
+    if (keepKeyboardFocus && document.activeElement === els.mobileKbInput) {
+      e.preventDefault();
+    }
+    stopHold();
+    heldFired = false;
+    holdTimer = setTimeout(() => {
+      heldFired = true;
+      sendRemoteKey(keyName);
+      repeatTimer = setInterval(() => sendRemoteKey(keyName), 85);
+    }, 380);
+  });
+  btn.addEventListener("pointerup", stopHold);
+  btn.addEventListener("pointercancel", stopHold);
+  btn.addEventListener("pointerleave", stopHold);
+  btn.addEventListener("click", () => {
+    if (!activeClient) return;
+    if (!heldFired) {
+      sendRemoteKey(keyName);
+    }
+    heldFired = false;
+    if (!keepKeyboardFocus) {
+      btn.blur();
+      els.stage.focus({ preventScroll: true });
+    }
+  });
+}
+
 for (const [btn, factor] of [
   [els.btnZoomOut, 1 / 1.35],
   [els.btnZoomIn, 1.35],
@@ -860,25 +1152,111 @@ for (const btn of [els.btnZoomReset, els.btnSidebarZoomReset]) {
   }
 }
 
+bindRepeatableKeyButton(els.btnQuickBackspace, "Backspace", { keepKeyboardFocus: true });
+bindRepeatableKeyButton(els.btnRemoteBackspace, "Backspace");
+bindRepeatableKeyButton(els.btnRemoteDelete, "Delete");
+
+if (els.btnRemoteClearText) {
+  els.btnRemoteClearText.addEventListener("click", () => {
+    if (!activeClient) return;
+    activeClient.sendInput({ type: "special_combo", combo: "ctrl_a" });
+    setTimeout(() => {
+      sendRemoteKey("Backspace");
+    }, 35);
+    els.btnRemoteClearText.blur();
+    els.stage.focus({ preventScroll: true });
+  });
+}
+
+if (els.btnClearPasteBox) {
+  els.btnClearPasteBox.addEventListener("click", () => {
+    els.pasteTextInput.value = "";
+    els.pasteTextInput.focus();
+  });
+}
+
+const KB_SENTINEL = " ";
+let kbSkipNextBeforeInput = false;
+let kbSkipNextEmptyInput = false;
+
+function scheduleKbFlagReset() {
+  setTimeout(() => {
+    kbSkipNextBeforeInput = false;
+    kbSkipNextEmptyInput = false;
+  }, 0);
+}
+
+function resetMobileKbInput() {
+  els.mobileKbInput.value = KB_SENTINEL;
+  try {
+    els.mobileKbInput.setSelectionRange(KB_SENTINEL.length, KB_SENTINEL.length);
+  } catch {
+    // Selection range unavailable
+  }
+}
+
 els.btnQuickKeyboard.addEventListener("click", () => {
+  resetMobileKbInput();
   els.mobileKbInput.focus();
+  resetMobileKbInput();
+});
+
+els.mobileKbInput.addEventListener("focus", () => {
+  resetMobileKbInput();
 });
 
 els.mobileKbInput.addEventListener("keydown", (e) => {
   if (!activeClient) return;
-  if (["Backspace", "Enter", "Tab", "Escape"].includes(e.key)) {
+  if (["Backspace", "Delete", "Enter", "Tab", "Escape"].includes(e.key)) {
     e.preventDefault();
-    activeClient.sendInput({ type: "key_event", code: e.key, key: e.key, down: true });
-    activeClient.sendInput({ type: "key_event", code: e.key, key: e.key, down: false });
+    if (e.key === "Backspace") {
+      kbSkipNextBeforeInput = true;
+      kbSkipNextEmptyInput = true;
+      scheduleKbFlagReset();
+    }
+    sendRemoteKey(e.key);
+    resetMobileKbInput();
+  }
+});
+
+els.mobileKbInput.addEventListener("beforeinput", (e) => {
+  if (!activeClient) return;
+  const t = e.inputType || "";
+  if (t === "deleteContentBackward" || t === "deleteWordBackward" || t === "deleteSoftLineBackward") {
+    e.preventDefault();
+    if (kbSkipNextBeforeInput) {
+      kbSkipNextBeforeInput = false;
+    } else {
+      kbSkipNextEmptyInput = true;
+      scheduleKbFlagReset();
+      sendRemoteKey("Backspace");
+    }
+    resetMobileKbInput();
+  } else if (t === "deleteContentForward" || t === "deleteWordForward") {
+    e.preventDefault();
+    sendRemoteKey("Delete");
+    resetMobileKbInput();
   }
 });
 
 els.mobileKbInput.addEventListener("input", () => {
   if (!activeClient) return;
   const val = els.mobileKbInput.value;
-  if (val) {
-    activeClient.sendText(val);
-    els.mobileKbInput.value = "";
+  if (val === "") {
+    if (kbSkipNextEmptyInput) {
+      kbSkipNextEmptyInput = false;
+    } else {
+      sendRemoteKey("Backspace");
+    }
+    resetMobileKbInput();
+    return;
+  }
+  if (val !== KB_SENTINEL) {
+    const typed = val.startsWith(KB_SENTINEL) ? val.slice(KB_SENTINEL.length) : val;
+    if (typed) {
+      activeClient.sendText(typed);
+    }
+    resetMobileKbInput();
   }
 });
 
@@ -976,6 +1354,10 @@ els.btnUploadFile.addEventListener("click", async () => {
   } catch (err) {
     els.fileProgress.textContent = `Error: ${err.message}`;
   }
+});
+
+window.addEventListener("pagehide", () => {
+  if (activeClient) activeClient.close("Page unloaded");
 });
 
 // Initial load & periodic host directory refresh

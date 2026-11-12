@@ -84,6 +84,7 @@ class HostPeerSession:
         send_binary: SendBinaryFn | None = None,
         support_pin: str | None = None,
         on_closed: Callable[[str], None] | None = None,
+        on_authenticated: Callable[[str], None] | None = None,
         quick_actions: QuickActionExecutor | None = None,
         control_only: bool = False,
     ) -> None:
@@ -99,6 +100,7 @@ class HostPeerSession:
         self.send_binary = send_binary
         self.support_pin = support_pin
         self.on_closed = on_closed
+        self.on_authenticated = on_authenticated
         self.quick_actions = quick_actions or MockQuickActionExecutor()
         self._control_only = control_only
 
@@ -111,6 +113,10 @@ class HostPeerSession:
         self._auth_event = asyncio.Event()
         self._authenticated = False
         self._closed = False
+        self._ended_by_remote = False
+        self._rejected = False
+        self._disconnect_task: asyncio.Task[None] | None = None
+        self._auth_timeout_task: asyncio.Task[None] | None = None
         self._srp_session: SRPServerSession | None = None
         self._pairing_nonce: str | None = None
         self._pairing_id_pending: str | None = None
@@ -174,20 +180,61 @@ class HostPeerSession:
 
         @self.pc.on("connectionstatechange")
         async def on_connectionstatechange() -> None:
-            logger.info("Session %s WebRTC connectionState=%s", self.session_id, self.pc.connectionState)
+            state = self.pc.connectionState if self.pc else "closed"
+            logger.info("Session %s WebRTC connectionState=%s", self.session_id, state)
             if self._switching_to_fallback or self._ws_fallback_active:
+                self._cancel_disconnect_timer()
                 return
-            if self.pc.connectionState == "connected":
+            if state == "connected":
+                self._cancel_disconnect_timer()
                 self._maybe_send_post_auth_control()
-            elif self.pc.connectionState == "closed":
-                await self.close()
-            elif self.pc.connectionState == "failed" and not self._authenticated:
-                await self.close()
+            elif state in {"closed", "failed"}:
+                self._cancel_disconnect_timer()
+                await self.close(reason=f"WebRTC {state}")
+            elif state == "disconnected" and self._authenticated:
+                self._schedule_disconnect_grace()
+
+    def _cancel_disconnect_timer(self) -> None:
+        if self._disconnect_task and not self._disconnect_task.done():
+            self._disconnect_task.cancel()
+        self._disconnect_task = None
+
+    def _schedule_disconnect_grace(self, delay: float = 10.0) -> None:
+        if self._disconnect_task and not self._disconnect_task.done():
+            return
+
+        async def _grace() -> None:
+            try:
+                await asyncio.sleep(delay)
+                if (
+                    not self._closed
+                    and not self._ws_fallback_active
+                    and not self._switching_to_fallback
+                    and self.pc is not None
+                    and self.pc.connectionState in {"disconnected", "failed", "closed"}
+                ):
+                    logger.info("Session %s WebRTC stayed disconnected for %.0fs; closing", self.session_id, delay)
+                    await self.close(reason="Peer connection timed out")
+            except asyncio.CancelledError:
+                pass
+
+        self._disconnect_task = asyncio.create_task(_grace())
 
     async def start_from_offer(
         self, sdp_offer: str, pairing_id: str | None = None, control_only: bool | None = None
     ) -> None:
         """Process viewer SDP offer (or lightweight control_only session) and issue auth challenge."""
+        if self._auth_timeout_task is None:
+            async def _expire_unauthenticated() -> None:
+                try:
+                    await asyncio.sleep(45.0)
+                    if not self._authenticated and not self._closed:
+                        logger.info("Session %s unauthenticated timeout; closing", self.session_id)
+                        await self.close(reason="Authentication timed out")
+                except asyncio.CancelledError:
+                    pass
+
+            self._auth_timeout_task = asyncio.create_task(_expire_unauthenticated())
         if control_only is not None and control_only != self._control_only:
             self._control_only = control_only
             if control_only:
@@ -422,7 +469,8 @@ class HostPeerSession:
                 self._dispatch_channel_message(label, data)
 
         elif msg_type == "session_end":
-            await self.close()
+            self._ended_by_remote = True
+            await self.close(notify_remote=False)
 
     def _unlock_session(self) -> None:
         logger.info(
@@ -432,6 +480,11 @@ class HostPeerSession:
             self._control_only,
         )
         self._authenticated = True
+        if self._auth_timeout_task and not self._auth_timeout_task.done():
+            self._auth_timeout_task.cancel()
+        self._auth_timeout_task = None
+        if self.on_authenticated:
+            self.on_authenticated(self.session_id)
         if not self._control_only:
             self._auth_event.set()
         self._maybe_send_post_auth_control()
@@ -641,7 +694,11 @@ class HostPeerSession:
             elif msg_type == "quick_action":
                 action = str(data.get("action") or "")
                 params = data.get("params") if isinstance(data.get("params"), dict) else {}
-                ok, message = self.quick_actions.execute(action, params)
+                try:
+                    ok, message = self.quick_actions.execute(action, params)
+                except Exception as exc:
+                    logger.warning("Session %s quick_action %s failed: %s", self.session_id, action, exc)
+                    ok, message = False, f"Quick action failed: {exc}"
                 self._send_dc(
                     "control",
                     {
@@ -728,6 +785,7 @@ class HostPeerSession:
             )
 
     async def reject(self, reason: str, code: str = "auth_failed") -> None:
+        self._rejected = True
         await self.send_signal(
             {
                 "type": "session_reject",
@@ -735,14 +793,29 @@ class HostPeerSession:
                 "payload": {"reason": reason, "code": code},
             }
         )
-        await self.close()
+        await self.close(reason=reason, notify_remote=False)
 
-    async def close(self) -> None:
+    async def close(self, reason: str = "Session closed", notify_remote: bool = True) -> None:
         if self._closed:
             return
         self._closed = True
         self._authenticated = False
+        self._cancel_disconnect_timer()
+        if self._auth_timeout_task and not self._auth_timeout_task.done():
+            self._auth_timeout_task.cancel()
+        self._auth_timeout_task = None
         self.injector.release_all_keys()
+        if notify_remote and not self._ended_by_remote and not self._rejected:
+            try:
+                await self.send_signal(
+                    {
+                        "type": "session_end",
+                        "session_id": self.session_id,
+                        "payload": {"reason": reason},
+                    }
+                )
+            except Exception:
+                pass
         for entry in list(self._incoming_files.values()):
             try:
                 entry["handle"].close()

@@ -208,12 +208,22 @@ def test_quick_actions_validation_and_telemetry() -> None:
     )
 
     assert validate_http_url("https://youtube.com") == "https://youtube.com"
+    assert validate_http_url("youtube.com") == "https://youtube.com"
+    assert validate_http_url("localhost:8080/ui") == "http://localhost:8080/ui"
     with pytest.raises(ValueError):
         validate_http_url("javascript:alert(1)")
     with pytest.raises(ValueError):
+        validate_http_url("javascript:123")
+    with pytest.raises(ValueError):
         validate_http_url("file:///c:/windows/win.ini")
+    with pytest.raises(ValueError):
+        validate_http_url("data:text/html,hi")
 
     qa = MockQuickActionExecutor()
+    ok_bare, _ = qa.execute("open_url", {"url": "youtube.com"})
+    assert ok_bare is True
+    ok_preset, _ = qa.execute("launch_preset", {"preset": "taskmgr"})
+    assert ok_preset is True
     ok, _ = qa.execute("privacy_lock")
     assert ok and qa.get_system_status()["privacy_lock_active"] is True
     ok, _ = qa.execute("open_lock")
@@ -231,3 +241,75 @@ def test_quick_actions_validation_and_telemetry() -> None:
             assert isinstance(st["windows_locked"], bool)
         finally:
             win_qa.close()
+
+
+def test_privacy_curtain_local_emergency_unlock() -> None:
+    import tkinter as tk
+    from host.privacy_curtain import build_curtain_ui
+
+    # 1. Verify clicking the Unlock button clears the curtain
+    root1 = tk.Tk()
+    root1.withdraw()
+    st1 = build_curtain_ui(root1)
+    assert st1["unlocked"] is False
+    st1["unlock_btn"].invoke()  # type: ignore[union-attr]
+    assert st1["unlocked"] is True
+
+    # 2. Verify pressing Escape 3 times displays countdown hints and then unlocks cleanly
+    root2 = tk.Tk()
+    root2.withdraw()
+    st2 = build_curtain_ui(root2)
+    on_esc = st2["on_escape"]
+    hint_var = st2["hint_var"]
+    on_esc()  # type: ignore[operator]
+    assert "2 more" in hint_var.get()  # type: ignore[union-attr]
+    on_esc()  # type: ignore[operator]
+    assert "1 more" in hint_var.get()  # type: ignore[union-attr]
+    on_esc()  # type: ignore[operator]
+    assert st2["unlocked"] is True
+
+
+def test_webrtc_session_quick_action_exception_safety(tmp_path: Path) -> None:
+    from host.config_store import PinRateLimiter, initialize_host_config
+    from host.input_win32 import ClipboardManager
+    from host.quick_actions import MockQuickActionExecutor
+    from host.webrtc_session import HostPeerSession
+
+    class _ExplodingQA(MockQuickActionExecutor):
+        def execute(self, action: str, params: dict | None = None) -> tuple[bool, str]:
+            raise OSError(22, "Elevated launch blocked")
+
+    cfg_path = tmp_path / "qa_exc.json"
+    cfg = initialize_host_config("ExcPC", "123456", path=cfg_path)
+    sent: list[tuple[str, dict]] = []
+
+    async def _noop_signal(_msg: dict) -> None:
+        return None
+
+    sess = HostPeerSession(
+        session_id="s-exc",
+        mode="me2me",
+        config=cfg,
+        config_path=cfg_path,
+        capturer=SyntheticCapturer(640, 360),
+        injector=MockInputInjector(),
+        clipboard=ClipboardManager(mock=True),
+        rate_limiter=PinRateLimiter(),
+        ice_servers=[],
+        send_signal=_noop_signal,
+        quick_actions=_ExplodingQA(),
+        control_only=True,
+    )
+    sess._authenticated = True
+    sess._send_dc = lambda ch, data: sent.append((ch, data))  # type: ignore[method-assign]
+
+    sess._dispatch_channel_message(
+        "control",
+        {"type": "quick_action", "action_id": "id-1", "action": "launch_preset", "params": {"preset": "taskmgr"}},
+    )
+    assert len(sent) == 1
+    ch, payload = sent[0]
+    assert ch == "control"
+    assert payload["type"] == "quick_action_result"
+    assert payload["ok"] is False
+    assert "Elevated launch blocked" in payload["message"]

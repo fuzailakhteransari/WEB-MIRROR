@@ -5,6 +5,9 @@ __pycache__/
 host/
 tests/
 extension/
+android-host/
+dist/*
+!dist/webdesk-phone-host.apk
 *.bat
 *.md
 .webdesk-remote/

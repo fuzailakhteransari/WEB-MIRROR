@@ -237,6 +237,7 @@ class HostAgent:
             send_binary=self.send_binary,
             support_pin=self._support_pin,
             on_closed=lambda sid: self.sessions.pop(sid, None),
+            on_authenticated=self._on_session_authenticated,
             quick_actions=self.quick_actions,
             control_only=control_only,
         )
@@ -251,11 +252,24 @@ class HostAgent:
             logger.exception("Failed starting WebRTC session %s: %s", session_id, exc)
             await session.reject(f"Host WebRTC initialization error: {exc}")
 
+    def _on_session_authenticated(self, keep_sid: str) -> None:
+        if self.mode != "me2me":
+            return
+        for sid in list(self.sessions.keys()):
+            if sid != keep_sid:
+                asyncio.create_task(self._close_replaced_session(sid))
+
+    async def _close_replaced_session(self, sid: str) -> None:
+        sess = self.sessions.pop(sid, None)
+        if sess:
+            logger.info("Closing previous session %s superseded by authenticated reconnect", sid)
+            await sess.close(reason="Replaced by new connection")
+
     async def _close_all_sessions(self) -> None:
         for sid in list(self.sessions.keys()):
             sess = self.sessions.pop(sid, None)
             if sess:
-                await sess.close()
+                await sess.close(notify_remote=False)
 
 
 def create_ephemeral_support_agent(

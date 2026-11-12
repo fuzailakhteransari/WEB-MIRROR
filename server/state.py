@@ -60,6 +60,7 @@ class SignalingSession:
     viewer_ws: WebSocket
     host_ws: WebSocket
     created_at: float = field(default_factory=time.time)
+    authenticated: bool = False
 
 
 class SignalingState:
@@ -88,11 +89,13 @@ class SignalingState:
             hid = item.get("host_id")
             if not hid:
                 continue
+            caps = item.get("capabilities")
             self.hosts[hid] = HostEntry(
                 host_id=hid,
                 name=item.get("name", hid),
                 platform=item.get("platform", "windows"),
                 mode="me2me",
+                capabilities=list(caps) if isinstance(caps, list) and caps else ["video", "input", "clipboard", "files"],
                 status="offline",
                 last_seen=float(item.get("last_seen", 0.0)),
                 websocket=None,
@@ -107,6 +110,7 @@ class SignalingState:
                 "host_id": h.host_id,
                 "name": h.name,
                 "platform": h.platform,
+                "capabilities": h.capabilities,
                 "last_seen": h.last_seen,
             }
             for h in self.hosts.values()
@@ -226,7 +230,16 @@ class SignalingState:
         if host.mode != mode:
             return None, "Target host is not accepting this connection mode"
         if host.active_sessions:
-            return None, "Target host is already in an active session"
+            if host.mode != "me2me":
+                return None, "Target host is already in an active session"
+            # Prune stalled unauthenticated Me2Me handshake attempts so reconnects never wedge.
+            now = time.time()
+            for sid in list(host.active_sessions):
+                existing = self.sessions.get(sid)
+                if not existing or (not existing.authenticated and (now - existing.created_at) > 45.0):
+                    self.end_session(sid)
+            if len(host.active_sessions) >= 3:
+                return None, "Too many concurrent connection attempts"
         session_id = secrets.token_urlsafe(16)
         session = SignalingSession(
             session_id=session_id,
@@ -247,8 +260,29 @@ class SignalingState:
         host = self.hosts.get(session.host_id)
         if host:
             host.active_sessions.discard(session_id)
-            host.status = "online" if host.websocket is not None else "offline"
+            if host.websocket is None:
+                host.status = "offline"
+            elif host.active_sessions:
+                host.status = "busy"
+            else:
+                host.status = "online"
         return session
+
+    def end_other_sessions(self, host_id: str, keep_session_id: str) -> list[SignalingSession]:
+        host = self.hosts.get(host_id)
+        if not host:
+            return []
+        keep = self.sessions.get(keep_session_id)
+        if keep:
+            keep.authenticated = True
+        ended: list[SignalingSession] = []
+        for sid in list(host.active_sessions):
+            if sid == keep_session_id:
+                continue
+            popped = self.end_session(sid)
+            if popped:
+                ended.append(popped)
+        return ended
 
     def disconnect_host_ws(self, ws: WebSocket) -> tuple[str | None, list[SignalingSession]]:
         target_id: str | None = None

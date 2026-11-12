@@ -62,7 +62,7 @@ def ensure_cloudflared(bin_dir: Path) -> Path:
 def start_cloudflared_tunnel(
     port: int,
     state_dir: Path,
-    timeout: float = 25.0,
+    timeout: float = 30.0,
 ) -> str:
     """Start Cloudflare Quick Tunnel for http://127.0.0.1:<port> and return public HTTPS URL."""
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -81,43 +81,69 @@ def start_cloudflared_tunnel(
             pass
 
     exe = ensure_cloudflared(state_dir / "bin")
-    log_path.write_text("", encoding="utf-8")
-    log_handle = log_path.open("ab")
     creationflags = 0
     if sys.platform == "win32":
         creationflags = subprocess.CREATE_NO_WINDOW | subprocess.CREATE_NEW_PROCESS_GROUP
 
-    proc = subprocess.Popen(
-        [
-            str(exe),
-            "tunnel",
-            "--no-autoupdate",
-            "--url",
-            f"http://127.0.0.1:{port}",
-        ],
-        stdout=log_handle,
-        stderr=subprocess.STDOUT,
-        stdin=subprocess.DEVNULL,
-        creationflags=creationflags,
+    # Try IPv4 edge first (more reliable on CGNAT/IPv6 ISPs), then default edge on retry.
+    attempt_flags = (["--edge-ip-version", "4"], [])
+    last_error = ""
+    per_attempt = max(8.0, timeout / len(attempt_flags))
+
+    for extra_flags in attempt_flags:
+        url_file.unlink(missing_ok=True)
+        log_path.write_text("", encoding="utf-8")
+        log_handle = log_path.open("ab")
+        proc = subprocess.Popen(
+            [
+                str(exe),
+                "tunnel",
+                "--no-autoupdate",
+                *extra_flags,
+                "--url",
+                f"http://127.0.0.1:{port}",
+            ],
+            stdout=log_handle,
+            stderr=subprocess.STDOUT,
+            stdin=subprocess.DEVNULL,
+            creationflags=creationflags,
+        )
+        log_handle.close()
+        pid_file.write_text(str(proc.pid), encoding="utf-8")
+
+        deadline = time.monotonic() + per_attempt
+        while time.monotonic() < deadline:
+            try:
+                content = log_path.read_text(encoding="utf-8", errors="ignore")
+                found = parse_tunnel_url(content)
+                if found:
+                    url_file.write_text(found, encoding="utf-8")
+                    return found
+            except OSError:
+                pass
+            if proc.poll() is not None:
+                break
+            time.sleep(0.35)
+
+        if proc.poll() is None:
+            try:
+                proc.terminate()
+                proc.wait(timeout=2)
+            except Exception:
+                proc.kill()
+        pid_file.unlink(missing_ok=True)
+        lines = [
+            ln.strip()
+            for ln in log_path.read_text(encoding="utf-8", errors="ignore").splitlines()
+            if ln.strip()
+        ]
+        if lines:
+            last_error = lines[-1]
+
+    detail = f" ({last_error})" if last_error else ""
+    raise RuntimeError(
+        f"Cloudflare Tunnel failed to start within {timeout:.0f}s{detail}. Check {log_path}"
     )
-    log_handle.close()
-    pid_file.write_text(str(proc.pid), encoding="utf-8")
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if proc.poll() is not None:
-            break
-        try:
-            content = log_path.read_text(encoding="utf-8", errors="ignore")
-            found = parse_tunnel_url(content)
-            if found:
-                url_file.write_text(found, encoding="utf-8")
-                return found
-        except OSError:
-            pass
-        time.sleep(0.35)
-
-    raise RuntimeError(f"Cloudflare Tunnel failed to start within {timeout}s. Check {log_path}")
 
 
 def _pid_alive(pid: int) -> bool:
@@ -128,8 +154,12 @@ def _pid_alive(pid: int) -> bool:
             ["tasklist", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
             capture_output=True,
             text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        return str(pid) in res.stdout
+        for line in res.stdout.splitlines():
+            if f'"{pid}"' in line and "cloudflared" in line.lower():
+                return True
+        return False
     try:
         os.kill(pid, 0)
         return True

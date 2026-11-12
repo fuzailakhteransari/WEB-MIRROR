@@ -23,6 +23,48 @@ def _free_port() -> int:
         return int(s.getsockname()[1])
 
 
+def test_windows_pid_check_hides_tasklist_console(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import host.launcher as launcher
+
+    expected_flag = getattr(launcher.subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    monkeypatch.setattr(launcher.subprocess, "CREATE_NO_WINDOW", expected_flag, raising=False)
+    monkeypatch.setattr(launcher, "sys", SimpleNamespace(platform="win32"))
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(stdout='"pythonw.exe","4321","Console","12,345 K"')
+
+    monkeypatch.setattr(launcher.subprocess, "run", fake_run)
+
+    assert launcher._is_pid_running(4321, name_contains="python") is True
+    assert calls[0][0][0] == "tasklist"
+    assert calls[0][1]["creationflags"] == expected_flag
+
+
+def test_windows_tunnel_pid_check_hides_tasklist_console(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    import host.tunnel as tunnel
+
+    expected_flag = getattr(tunnel.subprocess, "CREATE_NO_WINDOW", 0x08000000)
+    monkeypatch.setattr(tunnel.subprocess, "CREATE_NO_WINDOW", expected_flag, raising=False)
+    monkeypatch.setattr(tunnel, "sys", SimpleNamespace(platform="win32"))
+    calls = []
+
+    def fake_run(command, **kwargs):
+        calls.append((command, kwargs))
+        return SimpleNamespace(stdout='"cloudflared.exe","4321","Console","12,345 K"')
+
+    monkeypatch.setattr(tunnel.subprocess, "run", fake_run)
+
+    assert tunnel._pid_alive(4321) is True
+    assert calls[0][0][0] == "tasklist"
+    assert calls[0][1]["creationflags"] == expected_flag
+
+
 def test_launcher_start_idempotent_and_stop(tmp_path: Path) -> None:
     port = _free_port()
     cfg_path = tmp_path / "host_config.json"
@@ -173,7 +215,8 @@ def test_autostart_registry_and_service_prefs(tmp_path: Path) -> None:
     assert loaded["port"] == 8099
 
     cmd = build_autostart_command(cfg_path)
-    assert "-m host.launcher autostart" in cmd and str(cfg_path) in cmd
+    launcher_script = str((PROJECT_ROOT / "host" / "launcher.py").resolve())
+    assert launcher_script in cmd and " autostart " in cmd and str(cfg_path) in cmd
 
     if sys.platform == "win32":
         import winreg
@@ -283,3 +326,104 @@ def test_cloud_url_normalization_and_dockerfile_deps(tmp_path: Path) -> None:
     dockerfile = (PROJECT_ROOT / "Dockerfile").read_text(encoding="utf-8")
     for pkg in ("fastapi", "uvicorn", "websockets", "pydantic", "qrcode"):
         assert pkg in dockerfile
+
+
+def test_autostart_works_from_outside_cwd_and_respects_fixed_cloud_phone_mode(
+    tmp_path: Path, monkeypatch
+) -> None:
+    import os
+    import shlex
+    import time
+    from host.launcher import (
+        build_autostart_command,
+        main as launcher_main,
+        save_service_prefs,
+        stop_all,
+    )
+
+    port = _free_port()
+    state_dir = tmp_path / "state"
+    state_dir.mkdir()
+    outside_cwd = tmp_path / "sim_system32"
+    outside_cwd.mkdir()
+    cfg_path = state_dir / "boot_host.json"
+    initialize_host_config(
+        host_name="Boot-PC",
+        pin="123456",
+        server_url=f"ws://127.0.0.1:{port}/ws/host",
+        path=cfg_path,
+    )
+    save_service_prefs(
+        {"autostart_tunnel": False, "keep_awake": False, "port": port},
+        state_dir=state_dir,
+    )
+
+    try:
+        raw_cmd = build_autostart_command(cfg_path, python_exe=Path(sys.executable))
+        argv = shlex.split(raw_cmd, posix=False)
+        argv = [arg.strip('"') for arg in argv]
+        argv[0] = sys.executable
+        argv.append("--mock-desktop")
+        # Run with stripped PYTHONPATH and outside cwd (exactly like Windows HKCU Run at boot)
+        clean_env = {k: v for k, v in os.environ.items() if k.upper() != "PYTHONPATH"}
+        subprocess.run(
+            argv,
+            cwd=str(outside_cwd),
+            env=clean_env,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+
+        deadline = time.monotonic() + 15.0
+        ready = False
+        while time.monotonic() < deadline:
+            try:
+                with urllib.request.urlopen(f"http://127.0.0.1:{port}/api/health", timeout=0.5) as resp:
+                    if json.loads(resp.read().decode("utf-8")).get("online_hosts", 0) >= 1:
+                        ready = True
+                        break
+            except Exception:
+                pass
+            time.sleep(0.25)
+        assert ready is True
+        assert (state_dir / "autostart.log").exists()
+    finally:
+        stop_all(state_dir)
+
+    # Verify Fixed Cloud phone action does not invoke cloudflared quick tunnel
+    cloud_state = tmp_path / "cloud_state"
+    cloud_state.mkdir()
+    cloud_cfg = cloud_state / "cloud.json"
+    initialize_host_config(
+        host_name="CloudPhone-PC",
+        pin="123456",
+        server_url="wss://demo-fixed.onrender.com/ws/host",
+        path=cloud_cfg,
+    )
+    save_service_prefs(
+        {
+            "autostart_tunnel": True,
+            "keep_awake": False,
+            "port": port,
+            "custom_server_url": "wss://demo-fixed.onrender.com/ws/host",
+        },
+        state_dir=cloud_state,
+    )
+
+    tunnel_called = []
+    started_urls = []
+    monkeypatch.setattr(
+        "host.launcher.start_cloudflared_tunnel",
+        lambda *_a, **_kw: tunnel_called.append(True) or "https://unexpected.trycloudflare.com",
+    )
+
+    def fake_start_all(**kwargs):
+        started_urls.append(kwargs.get("custom_server_url"))
+        return {"base_url": "https://demo-fixed.onrender.com", "lan_url": "http://127.0.0.1:8080", "health": {}}
+
+    monkeypatch.setattr("host.launcher.start_all", fake_start_all)
+    rc = launcher_main(["phone", "--config", str(cloud_cfg), "--no-browser"])
+    assert rc == 0
+    assert tunnel_called == []
+    assert started_urls == ["wss://demo-fixed.onrender.com/ws/host"]

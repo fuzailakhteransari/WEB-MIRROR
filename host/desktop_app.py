@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import json
 import platform
@@ -91,10 +92,16 @@ def draw_qr_on_canvas(canvas: tk.Canvas, url: str) -> None:
 
 
 class WebDeskControlCenter:
-    def __init__(self, port: int = 8080, config_path: Path = DEFAULT_CONFIG_PATH) -> None:
+    def __init__(
+        self,
+        port: int = 8080,
+        config_path: Path = DEFAULT_CONFIG_PATH,
+        start_background: bool = False,
+    ) -> None:
         self.port = port
         self.config_path = config_path
         self.state_dir = config_path.parent
+        self._start_background_on_ready = start_background
         self.root = tk.Tk()
         self.root.title("WebDesk Remote - Control Center")
         self.root.geometry("700x720")
@@ -110,6 +117,8 @@ class WebDeskControlCenter:
         self._load_existing_config()
         self._start_status_poller()
         self.root.protocol("WM_DELETE_WINDOW", self._on_close)
+        if start_background:
+            self.root.after(150, self._start_background_if_ready)
 
     def _build_ui(self) -> None:
         style = ttk.Style()
@@ -220,8 +229,10 @@ class WebDeskControlCenter:
         left.pack(side="left", fill="both", expand=True, padx=(0, 14))
 
         btn_cfg = {"relief": "flat", "pady": 8, "padx": 12, "font": ("Segoe UI", 10, "bold"), "cursor": "hand2"}
-        tk.Button(left, text="Start Local & Wi-Fi Host", command=self._on_start_local, bg=ACCENT, fg="#fff", **btn_cfg).pack(fill="x", pady=3)
-        tk.Button(left, text="Start Free Phone Access (HTTPS + QR)", command=self._on_start_phone, bg="#247a56", fg="#fff", **btn_cfg).pack(fill="x", pady=3)
+        self.btn_start_local = tk.Button(left, text="Start Local & Wi-Fi Host", command=self._on_start_local, bg=ACCENT, fg="#fff", **btn_cfg)
+        self.btn_start_local.pack(fill="x", pady=3)
+        self.btn_start_phone = tk.Button(left, text="Start Free Phone Access (HTTPS + QR)", command=self._on_start_phone, bg="#247a56", fg="#fff", **btn_cfg)
+        self.btn_start_phone.pack(fill="x", pady=3)
         tk.Button(left, text="Open Browser Portal", command=self._on_open_portal, bg=SURFACE, fg=TEXT, **btn_cfg).pack(fill="x", pady=3)
         tk.Button(left, text="Share 12-Digit Support Code", command=self._on_share_support, bg=SURFACE, fg=TEXT, **btn_cfg).pack(fill="x", pady=3)
 
@@ -260,6 +271,7 @@ class WebDeskControlCenter:
         self.var_auto_tunnel = tk.BooleanVar(value=bool(prefs.get("autostart_tunnel", True)))
         self.var_keep_awake = tk.BooleanVar(value=bool(prefs.get("keep_awake", False)))
         self.var_custom_server = tk.StringVar(value=str(prefs.get("custom_server_url") or ""))
+        self.var_workspace_token = tk.StringVar()
 
         chk_cfg = {
             "bg": CARD,
@@ -292,6 +304,11 @@ class WebDeskControlCenter:
             cursor="hand2",
         ).pack(side="right")
 
+        token_row = tk.Frame(svc_card, bg=CARD)
+        token_row.pack(fill="x", pady=(8, 0))
+        tk.Label(token_row, text="Workspace Token (Optional):", bg=CARD, fg=MUTED, font=("Segoe UI", 9)).pack(side="left")
+        tk.Entry(token_row, textvariable=self.var_workspace_token, show="*", bg=BG, fg=TEXT, insertbackground=TEXT, relief="flat", font=("Segoe UI", 9)).pack(side="left", fill="x", expand=True, ipady=4, padx=(8, 0))
+
         self.lbl_log = tk.Label(self.root, text="Ready.", bg=BG, fg=MUTED, anchor="w", padx=16, pady=6, font=("Segoe UI", 9))
         self.lbl_log.pack(fill="x")
 
@@ -304,6 +321,7 @@ class WebDeskControlCenter:
         try:
             cfg = load_host_config(self.config_path)
             self.var_name.set(cfg.host_name)
+            self.var_workspace_token.set(cfg.workspace_token)
             self.lbl_pin_state.configure(text="PIN configured", fg=SUCCESS)
         except FileNotFoundError:
             self.lbl_pin_state.configure(text="No PIN set yet", fg="#f0b429")
@@ -362,11 +380,30 @@ class WebDeskControlCenter:
 
         def task() -> None:
             self._set_status("Saving PIN and restarting background host...")
-            was_running = fetch_health(f"http://127.0.0.1:{self.port}") is not None
+            prefs = load_service_prefs(self.state_dir)
+            custom_ws = str(prefs.get("custom_server_url") or "").strip()
+            keep_awake = bool(prefs.get("keep_awake", False))
+            host_pid = _read_pid(self.state_dir / "host.pid")
+            sup_pid = _read_pid(self.state_dir / "supervisor.pid")
+            was_running = (
+                fetch_health(f"http://127.0.0.1:{self.port}") is not None
+                or (host_pid is not None and _is_pid_running(host_pid, name_contains="python"))
+                or (sup_pid is not None and _is_pid_running(sup_pid, name_contains="python"))
+            )
             stop_all(self.state_dir)
             reset_host_pin(pin1, config_path=self.config_path, host_name=name, port=self.port)
-            if was_running:
-                start_all(port=self.port, config_path=self.config_path, state_dir=self.state_dir, open_browser=False)
+            if self._start_background_on_ready:
+                self._start_background_service()
+                self.root.after(0, lambda: self.var_autostart.set(True))
+            elif was_running:
+                start_all(
+                    port=self.port,
+                    config_path=self.config_path,
+                    state_dir=self.state_dir,
+                    open_browser=False,
+                    keep_awake=keep_awake,
+                    custom_server_url=custom_ws,
+                )
             self.root.after(0, lambda: (
                 self.var_pin1.set(""),
                 self.var_pin2.set(""),
@@ -376,14 +413,67 @@ class WebDeskControlCenter:
 
         self._run_bg(task)
 
+    def _start_background_service(self) -> int:
+        """Enable quiet Windows startup and start the watchdog without interrupting a live session."""
+        prefs = load_service_prefs(self.state_dir)
+        save_service_prefs(
+            {
+                "port": self.port,
+                "autostart_tunnel": True,
+                "keep_awake": bool(prefs.get("keep_awake", False)),
+                "custom_server_url": str(prefs.get("custom_server_url") or "").strip(),
+            },
+            state_dir=self.state_dir,
+        )
+        enable_autostart(config_path=self.config_path)
+        return start_supervisor(
+            port=self.port,
+            config_path=self.config_path,
+            state_dir=self.state_dir,
+        )
+
+    def _start_background_if_ready(self) -> None:
+        if not self.config_path.exists():
+            self._set_status("Create and save an Access PIN to finish first-time setup.")
+            return
+
+        def task() -> None:
+            self._set_status("Starting WebDesk Remote in the background...")
+            supervisor_pid = self._start_background_service()
+            self.root.after(0, lambda: self.var_autostart.set(True))
+            self._set_status(f"Background service is running (PID {supervisor_pid}).")
+
+        self._run_bg(task)
+
     def _on_start_local(self) -> None:
         if not self._ensure_configured_or_warn():
             return
 
         def task() -> None:
-            self._set_status("Starting signaling server and Windows host...")
-            res = start_all(port=self.port, config_path=self.config_path, state_dir=self.state_dir, open_browser=False)
-            self._set_status(f"Running locally at {res['base_url']} and {res['lan_url']}")
+            prefs = load_service_prefs(self.state_dir)
+            custom_ws = str(prefs.get("custom_server_url") or "").strip()
+            keep_awake = bool(prefs.get("keep_awake", False))
+            if custom_ws:
+                self._set_status("Starting Windows host on Fixed Cloud server...")
+                res = start_all(
+                    port=self.port,
+                    config_path=self.config_path,
+                    state_dir=self.state_dir,
+                    open_browser=False,
+                    keep_awake=keep_awake,
+                    custom_server_url=custom_ws,
+                )
+                self._set_status(f"Fixed Cloud host running: {res['base_url']}")
+            else:
+                self._set_status("Starting signaling server and Windows host...")
+                res = start_all(
+                    port=self.port,
+                    config_path=self.config_path,
+                    state_dir=self.state_dir,
+                    open_browser=False,
+                    keep_awake=keep_awake,
+                )
+                self._set_status(f"Running locally at {res['base_url']} and {res['lan_url']}")
 
         self._run_bg(task)
 
@@ -392,8 +482,30 @@ class WebDeskControlCenter:
             return
 
         def task() -> None:
+            prefs = load_service_prefs(self.state_dir)
+            custom_ws = str(prefs.get("custom_server_url") or "").strip()
+            keep_awake = bool(prefs.get("keep_awake", False))
+            if custom_ws:
+                self._set_status("Connecting Windows host to Fixed Cloud URL...")
+                res = start_all(
+                    port=self.port,
+                    config_path=self.config_path,
+                    state_dir=self.state_dir,
+                    open_browser=False,
+                    keep_awake=keep_awake,
+                    custom_server_url=custom_ws,
+                )
+                self._set_status(f"Fixed Cloud Phone Access Ready: {res['base_url']}")
+                return
+
             self._set_status("Starting host + free Cloudflare HTTPS tunnel...")
-            start_all(port=self.port, config_path=self.config_path, state_dir=self.state_dir, open_browser=False)
+            start_all(
+                port=self.port,
+                config_path=self.config_path,
+                state_dir=self.state_dir,
+                open_browser=False,
+                keep_awake=keep_awake,
+            )
             url = start_cloudflared_tunnel(self.port, self.state_dir)
             self._set_status(f"Phone Access Ready: {url}")
 
@@ -429,6 +541,7 @@ class WebDeskControlCenter:
         auto_tun = bool(self.var_auto_tunnel.get())
         keep_awake = bool(self.var_keep_awake.get())
         raw_server = self.var_custom_server.get().strip()
+        workspace_token = self.var_workspace_token.get().strip()
         try:
             custom_ws = normalize_cloud_ws_url(raw_server)
         except ValueError as exc:
@@ -443,6 +556,7 @@ class WebDeskControlCenter:
                 config_path=self.config_path,
                 state_dir=self.state_dir,
                 port=self.port,
+                workspace_token=workspace_token,
                 keep_awake=keep_awake,
             )
             save_service_prefs(
@@ -599,14 +713,18 @@ class WebDeskControlCenter:
             )
         else:
             host_pid = _read_pid(self.state_dir / "host.pid")
-            if cloud_base and host_pid and _is_pid_running(host_pid):
+            if cloud_base and host_pid and _is_pid_running(host_pid, name_contains="python"):
                 self.lbl_overall.configure(text="Cloud sleeping / reconnecting...", fg="#f0b429")
             else:
                 self.lbl_overall.configure(text="Stopped", fg=MUTED)
 
         if cloud_base:
+            self.btn_start_local.configure(text="Start Fixed Cloud Host")
+            self.btn_start_phone.configure(text="Connect Fixed Cloud + Show Phone QR")
             lines = [f"Fixed Cloud: {cloud_base}", f"Local Host: running on {self.state_dir}"]
         else:
+            self.btn_start_local.configure(text="Start Local & Wi-Fi Host")
+            self.btn_start_phone.configure(text="Start Free Phone Access (HTTPS + QR)")
             lines = [f"Local: http://127.0.0.1:{self.port}", f"Wi-Fi: http://{lan_ip}:{self.port}"]
         if tun_url:
             lines.append(f"Phone: {tun_url}")
@@ -637,8 +755,8 @@ class WebDeskControlCenter:
         sup_pid = _read_pid(self.state_dir / "supervisor.pid")
         running = (
             fetch_health(f"http://127.0.0.1:{self.port}", timeout=0.25) is not None
-            or (host_pid is not None and _is_pid_running(host_pid))
-            or (sup_pid is not None and _is_pid_running(sup_pid))
+            or (host_pid is not None and _is_pid_running(host_pid, name_contains="python"))
+            or (sup_pid is not None and _is_pid_running(sup_pid, name_contains="python"))
         )
         if running:
             choice = messagebox.askyesnocancel(
@@ -660,8 +778,15 @@ class WebDeskControlCenter:
         self.root.mainloop()
 
 
-def main() -> int:
-    app = WebDeskControlCenter()
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description="WebDesk Remote Control Center")
+    parser.add_argument(
+        "--start-background",
+        action="store_true",
+        help="Start the always-on service as soon as a PIN is configured.",
+    )
+    args = parser.parse_args(argv)
+    app = WebDeskControlCenter(start_background=args.start_background)
     app.run()
     return 0
 

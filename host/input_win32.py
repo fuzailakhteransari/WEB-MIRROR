@@ -387,6 +387,7 @@ class Win32InputInjector(InputInjector):
             "alt_tab": [(0xA4, False), (0x09, False)],
             "ctrl_shift_esc": [(0xA2, False), (0xA0, False), (0x1B, False)],
             "win_d": [(0x5B, True), (ord("D"), False)],
+            "ctrl_a": [(0xA2, False), (ord("A"), False)],
         }
         seq = combos.get(combo)
         if not seq:

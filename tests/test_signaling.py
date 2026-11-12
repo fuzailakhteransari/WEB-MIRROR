@@ -167,3 +167,56 @@ def test_ice_servers_file_and_tunnel_url_endpoint(tmp_path: Path, monkeypatch) -
     assert qr_resp.status_code == 200
     assert qr_resp.headers["content-type"].startswith("image/svg+xml")
     assert "<svg" in qr_resp.text and "<rect" in qr_resp.text
+
+
+def test_me2me_authenticated_reconnect_replaces_stale_busy_session() -> None:
+    app = create_app(ServerConfig())
+    client = TestClient(app)
+
+    with client.websocket_connect("/ws/host") as host_ws:
+        host_ws.send_json(
+            {
+                "type": "register_host",
+                "payload": {"host_id": "m1", "name": "Home-PC", "mode": "me2me", "monitors": []},
+            }
+        )
+        assert host_ws.receive_json()["type"] == "host_registered"
+
+        with client.websocket_connect("/ws/client") as v1:
+            v1.send_json({"type": "connect_host", "host_id": "m1", "payload": {"sdp_offer": "v=0"}})
+            s1 = v1.receive_json()
+            assert s1["type"] == "session_created"
+            req1 = host_ws.receive_json()
+            assert req1["type"] == "connect_request"
+            sid1 = s1["session_id"]
+
+            # Host is marked busy while v1 is active
+            hosts_busy = client.get("/api/hosts").json()["hosts"]
+            assert hosts_busy[0]["status"] == "busy"
+
+            # Owner reconnects from another tab/phone while old socket is still half-open
+            with client.websocket_connect("/ws/client") as v2:
+                v2.send_json({"type": "connect_host", "host_id": "m1", "payload": {"sdp_offer": "v=0"}})
+                s2 = v2.receive_json()
+                assert s2["type"] == "session_created"
+                req2 = host_ws.receive_json()
+                assert req2["type"] == "connect_request"
+                sid2 = s2["session_id"]
+
+                # Before PIN/pairing proof completes, v1 stays protected
+                hosts_still_busy = client.get("/api/hosts").json()["hosts"]
+                assert hosts_still_busy[0]["status"] == "busy"
+
+                # Once host confirms PIN/pairing proof for v2, stale v1 is cleanly replaced
+                host_ws.send_json(
+                    {"type": "pake_server_proof", "session_id": sid2, "payload": {"M2": "ok"}}
+                )
+                proof = v2.receive_json()
+                assert proof["type"] == "pake_server_proof"
+                ended1 = v1.receive_json()
+                assert ended1["type"] == "session_end"
+                assert ended1["session_id"] == sid1
+
+        # After v2 exits cleanly, host immediately returns online
+        hosts_online = client.get("/api/hosts").json()["hosts"]
+        assert hosts_online[0]["status"] == "online"
